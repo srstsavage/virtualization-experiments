@@ -49,7 +49,35 @@ services:
             "ExposeHeaders": ["Content-Range", "Content-Length", "ETag", "Last-Modified", "Accept-Ranges"]}]}'
         echo "bucket icechunk: public read policy and CORS applied"
 
-  #gridlook:
-  #  build:
-  #    dockerfile_inline:
-  #      FROM dhi.io/node:26-alpine3.23-sfw-ent-dev
+  # gridlook (https://github.com/d70-t/gridlook) on http://localhost:3000, built
+  # from a pinned commit plus ./gridlook/coordinates-by-units.patch. The patch
+  # makes gridlook resolve a variable's CF "coordinates" (e.g. ROMS lon_rho
+  # lat_rho) by units, so staggered-grid coordinates such as lat_psi are not
+  # picked for rho-point data. `git apply` fails the build if the patch no
+  # longer applies cleanly (bump GRIDLOOK_REF only together with the patch).
+  # Open e.g. http://localhost:3000/#http://localhost:7070/icechunk/wcofs.icechunk
+  gridlook:
+    build:
+      context: ./gridlook
+      args:
+        GRIDLOOK_REF: c5dae9a0b25cdab93d0bb772f03b332db733c257
+      dockerfile_inline: |
+        FROM dhi.io/node:26-alpine3.23-dev
+        ARG GRIDLOOK_REF
+        USER root
+        RUN apk add --no-cache git
+        WORKDIR /app
+        RUN git init -q . \
+         && git remote add origin https://github.com/d70-t/gridlook.git \
+         && git fetch -q --depth 1 origin "$$GRIDLOOK_REF" \
+         && git checkout -q FETCH_HEAD
+        COPY coordinates-by-units.patch /tmp/
+        RUN git apply --check /tmp/coordinates-by-units.patch \
+         && git apply /tmp/coordinates-by-units.patch
+        # Install scripts are needed: the git dependency @eeholmes/zarrita-pcodec
+        # compiles itself in its prepare script. HUSKY=0 skips gridlook's git hooks.
+        RUN HUSKY=0 npm ci && npm run build
+        EXPOSE 3000
+        CMD ["npx", "vite", "preview", "--host", "0.0.0.0", "--port", "3000", "--strictPort"]
+    ports:
+      - 3000:3000

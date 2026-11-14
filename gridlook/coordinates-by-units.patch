@@ -1,0 +1,57 @@
+diff --git a/src/lib/data/coordinateVariables.ts b/src/lib/data/coordinateVariables.ts
+index 6b6248a..18b3b70 100644
+--- a/src/lib/data/coordinateVariables.ts
++++ b/src/lib/data/coordinateVariables.ts
+@@ -422,6 +422,32 @@ function refineLatLonFromSources(
+   return { latitudeName, longitudeName };
+ }
+ 
++function resolveLatLonFromCoordinateUnits(
++  sources: TSources["levels"][0]["datasources"],
++  variable: string,
++  datavar: zarr.Array<zarr.DataType, zarr.AsyncReadable>,
++  latitudeName: string | null,
++  longitudeName: string | null
++): TLatLonNames {
++  const coordinates = datavar.attrs.coordinates;
++  if (typeof coordinates !== "string") {
++    return { latitudeName, longitudeName };
++  }
++  for (const coordName of coordinates.split(" ").filter(Boolean)) {
++    const path = ZarrDataManager.resolveVariablePath(variable, coordName);
++    const attrs = sources[path]?.attrs;
++    if (!attrs) {
++      continue;
++    }
++    if (!latitudeName && isLatitudeVariable(path, attrs)) {
++      latitudeName = path;
++    } else if (!longitudeName && isLongitudeVariable(path, attrs)) {
++      longitudeName = path;
++    }
++  }
++  return { latitudeName, longitudeName };
++}
++
+ /**
+  * This function search for the names of the latitude and longitude variables based on the following behaviour:
+  * 1. Get the "coordinates" attribute of the data variable. If the grid is rotated,
+@@ -448,6 +474,19 @@ function findLatLonNames(
+     isRotated
+   );
+ 
++  // CF "coordinates" entries with non-standard names (e.g. ROMS lat_rho/lon_rho)
++  // are recognised by their units. Without this, the source-wide search below
++  // can pick a coordinate of a different (staggered) grid, e.g. lat_psi.
++  if ((!latitudeName || !longitudeName) && !isRotated) {
++    ({ latitudeName, longitudeName } = resolveLatLonFromCoordinateUnits(
++      datasources.levels[0].datasources,
++      variable,
++      datavar,
++      latitudeName,
++      longitudeName
++    ));
++  }
++
+   // (re-)assign lat/lon names from sources using priority ordering:
+   // Longitude: rlon > lon > longitude > anything else
+   // Latitude:  rlat > lat > latitude  > anything else

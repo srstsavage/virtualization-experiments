@@ -2,8 +2,10 @@
 
 ```
 sbx skills add ocean-icechunks/ocean-icechunks-skills
+sbx settings set claude.remoteControl true
 sbx run claude --kit docker.io/sbx/mise:latest
 ```
+
 
 # Things to investigate
 
@@ -76,7 +78,8 @@ Lists the source files that would be indexed. No repository is needed.
 
 Every field of a dataset preset can also be overridden from the command line:
 `--bucket-url`, `--http-base`, `--key-root`, `--key-template`, `--file-regex`,
-`--concat-dim`, `--loadable`, `--time-chunk`, `--drop-global-attrs`. Run
+`--concat-dim`, `--loadable`, `--time-chunk`, `--drop-global-attrs`,
+`--coord-aliases` (e.g. `'lat=lat_rho,lon=lon_rho'`; `''` for none). Run
 `./virtualize.py --help` for the full list.
 
 ## Adding a dataset
@@ -95,6 +98,7 @@ or put it in your own file and pass `--config path/to/file.yml`:
 | `loadable` | `[ocean_time]` | Small variables to materialize; must include `concat_dim` |
 | `time_chunk` | 4096 | Chunk length of the materialized time coordinate |
 | `drop_global_attrs` | `[file, history, rst_file, ..., 'frc_file_[0-9]*']` | Global attributes that describe a single run/file, as a list of names. Wildcards allowed (see below). Default `[file, history]` |
+| `coord_aliases` | `{lat: lat_rho, lon: lon_rho}` | Extra coordinates `{alias: source}` that reuse the source coordinate's references (no data copied), for viewers that only recognise names like `lat`/`lon`. Default none |
 
 The WCOFS entry in full:
 
@@ -107,6 +111,7 @@ wcofs-fields-nowcast:
   file_regex: '^wcofs\.t\d{2}z\.\d{8}\.fields\.n\d{3}\.nc$'
   concat_dim: ocean_time
   loadable: [ocean_time]
+  coord_aliases: {lat: lat_rho, lon: lon_rho}
   drop_global_attrs:
     - file
     - history
@@ -209,6 +214,31 @@ them over S3 (`Object should have an etag`). To publish such a repository,
 upload it, e.g. `aws s3 sync --endpoint-url http://localhost:7070
 ./some.icechunk s3://icechunk/some.icechunk` from a directory outside
 `./repos`.
+
+## Viewing in gridlook
+
+`docker compose up -d` also builds and starts
+[gridlook](https://github.com/d70-t/gridlook) on `http://localhost:3000`, from a
+pinned commit plus `gridlook/coordinates-by-units.patch`. Open a repository
+with `http://localhost:3000/#http://localhost:7070/icechunk/<name>.icechunk`.
+
+ROMS output such as WCOFS has four staggered grids (`lat_rho`, `lat_u`,
+`lat_v`, `lat_psi`, ...). Stock gridlook only recognises coordinates named
+`lat`/`lon` in a variable's `coordinates` attribute. Otherwise it takes any
+array with `degree_north` units, which here is `lat_psi` (1015×347). It then
+draws 348-wide rho-grid fields such as `temp` on a 347-wide grid, so every
+row shifts by one cell and the land mask shows up as diagonal bands. Two fixes
+address this:
+
+- The patch makes gridlook recognise `coordinates` entries by their units, so
+  each variable gets its own grid (rho, u or v).
+- `virtualize.py` adds `lat`/`lon` aliases of `lat_rho`/`lon_rho`
+  (`coord_aliases`), so unpatched gridlook instances get rho-grid fields right.
+
+`virtualize.py` also adds a numeric `missing_value` next to each base64
+`_FillValue` (the Zarr v3 form only xarray decodes), so land cells (1e37) are
+masked outside xarray too. Both repairs apply only to arrays a build creates.
+Repositories built before them must be rebuilt to pick them up.
 
 ## Notes
 

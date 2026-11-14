@@ -12,6 +12,9 @@
 #   drop_global_attrs  (optional, default [file, history]) list of global
 #                      attribute names that describe a single run/file;
 #                      shell-style wildcards allowed, e.g. frc_file_*
+#   coord_aliases      (optional, default none) {alias: source} extra coordinates
+#                      that reuse another coordinate's references, e.g. a plain
+#                      lat/lon for viewers that only look for those names
 #
 # Quote regexes with single quotes so backslashes are kept as-is. Quote list
 # entries that start with * or [ (YAML gives those a meaning), and any pattern
@@ -30,6 +33,9 @@ wcofs-fields-nowcast:
   file_regex: '^wcofs\.t\d{2}z\.\d{8}\.fields\.n\d{3}\.nc$'
   concat_dim: ocean_time
   loadable: [ocean_time]
+  # ROMS has four staggered grids (rho, u, v, psi). Plain lat/lon point at the
+  # rho grid, where most fields (temp, salt, zeta, ...) live.
+  coord_aliases: {lat: lat_rho, lon: lon_rho}
   drop_global_attrs:
     - file
     - history

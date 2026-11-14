@@ -59,6 +59,7 @@ Reading the result:
 from __future__ import annotations
 
 import argparse
+import base64
 import dataclasses
 import datetime as dt
 import fnmatch
@@ -109,6 +110,11 @@ class Dataset:
     # up describing whichever file was indexed last). Attribute names; each may
     # use shell-style wildcards (*, ?, [...]), e.g. "frc_file_*".
     drop_global_attrs: tuple[str, ...] = ("file", "history")
+    # Extra coordinates that reuse another coordinate's references, as
+    # {alias: source}, e.g. {lat: lat_rho, lon: lon_rho}. Viewers that only
+    # recognise coordinates named lat/lon (gridlook) otherwise pick an arbitrary
+    # one of several staggered grids. No data is copied.
+    coord_aliases: dict[str, str] = dataclasses.field(default_factory=dict)
 
     @property
     def url_prefix(self) -> str:
@@ -129,6 +135,10 @@ def load_datasets(path: Path = DATASETS_FILE) -> dict[str, Dataset]:
                 if not isinstance(fields[key], list):
                     raise SystemExit(f"{path}: dataset {name!r}: {key} must be a list")
                 fields[key] = tuple(str(v) for v in fields[key])
+        if "coord_aliases" in fields:
+            if not isinstance(fields["coord_aliases"], dict):
+                raise SystemExit(f"{path}: dataset {name!r}: coord_aliases must be a mapping")
+            fields["coord_aliases"] = {str(k): str(v) for k, v in fields["coord_aliases"].items()}
         try:
             out[name] = Dataset(**fields)
         except TypeError as e:  # unknown or missing field
@@ -226,8 +236,45 @@ def _json_safe(value):
     return value, False
 
 
-def repair_metadata(vds: xr.Dataset, dim: str, drop_global: tuple[str, ...]) -> xr.Dataset:
+def _decode_fill(value, dtype: np.dtype):
+    """Numeric value of a _FillValue attribute, or None. Zarr v3 stores float
+    fill values as base64 of the little-endian bytes (xarray's encoding), which
+    only xarray decodes."""
+    if isinstance(value, str):
+        try:
+            raw = base64.b64decode(value, validate=True)
+        except ValueError:
+            return None
+        if dtype.kind != "f" or len(raw) not in (4, 8):
+            return None
+        value = np.frombuffer(raw, dtype=f"<f{len(raw)}")[0]
+    if not isinstance(value, (int, float, np.number)) or not math.isfinite(value):
+        return None
+    return value
+
+
+def repair_metadata(vds: xr.Dataset, dim: str, drop_global: tuple[str, ...],
+                    coord_aliases: dict[str, str] | None = None) -> xr.Dataset:
     changes: list[str] = []
+    # Plain-number missing_value next to the base64 _FillValue, so readers other
+    # than xarray (e.g. gridlook) mask land/fill cells. Same value, so xarray's
+    # CF decoding is unchanged.
+    for name, v in vds.variables.items():
+        if "missing_value" in v.attrs or "_FillValue" not in v.attrs:
+            continue
+        fill = _decode_fill(v.attrs["_FillValue"], v.dtype)
+        if fill is not None:
+            v.attrs["missing_value"] = np.asarray(fill, dtype=v.dtype).item()
+            changes.append(f"{name}: added numeric missing_value")
+    for alias, source in (coord_aliases or {}).items():
+        if alias in vds.variables:
+            raise SystemExit(f"coord_aliases: {alias!r} already exists in the source files")
+        if source not in vds.variables:
+            raise SystemExit(f"coord_aliases: source {source!r} not in the source files")
+        src = vds[source].variable
+        attrs = dict(src.attrs) | {"comment": f"alias of {source} (same data) for viewers that look for {alias!r}"}
+        vds = vds.assign_coords({alias: xr.Variable(src.dims, src.data, attrs)})
+        changes.append(f"{alias}: added alias of {source}")
     for key in [k for k in vds.attrs if any(fnmatch.fnmatchcase(k, pat) for pat in drop_global)]:
         del vds.attrs[key]
         changes.append(f"<global>: dropped run-specific attribute {key!r}")
@@ -336,7 +383,7 @@ def combine(vds_list: list[xr.Dataset], ds: Dataset) -> xr.Dataset:
         vds_list, dim=ds.concat_dim, data_vars="minimal", coords="minimal",
         compat="override", combine_attrs="drop_conflicts",
     )
-    return repair_metadata(vds, ds.concat_dim, ds.drop_global_attrs)
+    return repair_metadata(vds, ds.concat_dim, ds.drop_global_attrs, ds.coord_aliases)
 
 
 def replace_steps(session: ic.Session, vds: xr.Dataset, dim: str, start: int) -> None:
@@ -544,6 +591,8 @@ def main() -> None:
     p.add_argument("--time-chunk", type=int)
     p.add_argument("--drop-global-attrs",
                    help="comma-separated global attribute names to drop (wildcards allowed, e.g. 'frc_file_*')")
+    p.add_argument("--coord-aliases",
+                   help="comma-separated alias=source coordinate aliases, e.g. 'lat=lat_rho,lon=lon_rho' ('' for none)")
     args = p.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -558,6 +607,8 @@ def main() -> None:
         "concat_dim": args.concat_dim, "time_chunk": args.time_chunk,
         "drop_global_attrs": tuple(args.drop_global_attrs.split(",")) if args.drop_global_attrs else None,
         "loadable": tuple(args.loadable.split(",")) if args.loadable else None,
+        "coord_aliases": None if args.coord_aliases is None else
+            dict(pair.split("=", 1) for pair in args.coord_aliases.split(",") if pair),
     }.items() if v is not None}
     ds = dataclasses.replace(datasets[args.dataset], **overrides)
     if ds.concat_dim not in ds.loadable:
