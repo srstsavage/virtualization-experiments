@@ -1,0 +1,3 @@
+[tools]
+"github:earth-mover/core-drill" = "latest"
+uv = "latest"

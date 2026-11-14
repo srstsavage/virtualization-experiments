@@ -1,0 +1,43 @@
+# Dataset presets for virtualize.py. Each top-level key is a preset name (the
+# script's first argument); its fields map onto the Dataset dataclass:
+#
+#   bucket_url         bucket used for anonymous listing, e.g. s3://bucket
+#   http_base          public HTTPS base embedded in the references; ends in "/"
+#   key_root           dataset prefix inside the bucket; ends in "/"
+#   key_template       per-day folder under key_root (strftime format)
+#   file_regex         which file names in a day folder belong to this stream
+#   concat_dim         dimension the files are appended along
+#   loadable           (optional) small variables to materialize; must include concat_dim
+#   time_chunk         (optional, default 4096) chunk length of the concat coordinate
+#   drop_global_attrs  (optional, default [file, history]) list of global
+#                      attribute names that describe a single run/file;
+#                      shell-style wildcards allowed, e.g. frc_file_*
+#
+# Quote regexes with single quotes so backslashes are kept as-is. Quote list
+# entries that start with * or [ (YAML gives those a meaning), and any pattern
+# with [...] inside an inline [a, b] list.
+
+# WCOFS (West Coast Operational Forecast System), NOAA NOS, on the NOAA Open
+# Data Dissemination bucket. One cycle (t03z) per day. The nowcast files of
+# day D cover D-1 06:00 .. D 03:00 at 3-hourly steps, so consecutive days are
+# contiguous and never overlap. Forecast files (fNNN) overlap across days and
+# are deliberately NOT a preset: they need a run/lead-time dimension.
+wcofs-fields-nowcast:
+  bucket_url: s3://noaa-nos-ofs-pds
+  http_base: https://noaa-nos-ofs-pds.s3.amazonaws.com/
+  key_root: wcofs/netcdf/
+  key_template: "%Y/%m/%d/"
+  file_regex: '^wcofs\.t\d{2}z\.\d{8}\.fields\.n\d{3}\.nc$'
+  concat_dim: ocean_time
+  loadable: [ocean_time]
+  drop_global_attrs:
+    - file
+    - history
+    - rst_file
+    - his_base
+    - sta_file
+    - ini_file
+    - river_file
+    - 'frc_file_[0-9]*'
+    - 'bry_file_[0-9]*'
+    - 'clm_file_[0-9]*'
