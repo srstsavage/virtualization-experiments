@@ -1,19 +1,21 @@
-# set up
+# Set up
 
+```
 sbx skills add ocean-icechunks/ocean-icechunks-skills
 sbx run claude --kit docker.io/sbx/mise:latest
+```
 
 # Things to investigate
 
 ## Multiscale overviews/pyramids
 
-https://github.com/earth-mover/icechunk-multiscales-demo
-https://github.com/carbonplan/topozarr
-https://github.com/carbonplan/ndpyramid
+* https://github.com/earth-mover/icechunk-multiscales-demo
+* https://github.com/carbonplan/topozarr
+* https://github.com/carbonplan/ndpyramid
 
 # Data sources
 
-https://registry.opendata.aws/noaa-ofs/
+* https://registry.opendata.aws/noaa-ofs/
 
 # virtualize.py usage
 

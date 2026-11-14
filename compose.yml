@@ -1,0 +1,20 @@
+services:
+  s3:
+    image: versity/versitygw
+    ports:
+      - 7070:7070
+      - 8080:8080
+    volumes:
+      - ./repos:/data/s3/localhost
+    environment:
+      ROOT_ACCESS_KEY: "${VGW_S3_ACCESS_KEY:-asdf}"
+      ROOT_SECRET_KEY: "${VGW_S3_SECRET_KEY:-asdf}"
+      VGW_BACKEND: posix
+      VGW_BACKEND_ARGS: /data/s3
+      VGW_WEBSITE_PORT: ":8080"
+      VGW_CORS_ALLOW_ORIGIN: "*"
+      VGW_WEBSITE_DOMAIN: localhost
+  #gridlook:
+  #  build:
+  #    dockerfile_inline:
+  #      FROM dhi.io/node:26-alpine3.23-sfw-ent-dev
