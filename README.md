@@ -66,7 +66,7 @@ Lists the source files that would be indexed. No repository is needed.
 |---|---|---|
 | `dataset` | — | Preset name from the config file (`wcofs-fields-nowcast`) |
 | `--config` | `datasets.yml` next to the script | YAML file of dataset presets |
-| `--repo` | — | Local directory, or `s3://bucket/prefix` (credentials from the environment, e.g. `AWS_ACCESS_KEY_ID`). Required unless `--dry-run` |
+| `--repo` | — | Local directory, or `s3://bucket/prefix` (settings from `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL`; see [Local S3](#local-s3-versitygw)). Required unless `--dry-run` |
 | `--start`, `--end` | — | Date range, `YYYY-MM-DD`, inclusive |
 | `--batch-size` | 64 | Files per commit. A failed run resumes from the last commit |
 | `--workers` | 8 | Processes opening source files in parallel |
@@ -166,10 +166,55 @@ The source prefix is also stored in the dataset attribute `virtualized_source`.
 Reading data needs internet access to the source bucket; no AWS credentials are
 required.
 
+## Local S3 (versitygw)
+
+`compose.yml` runs [versitygw](https://github.com/versity/versitygw) on
+`http://localhost:7070` with a posix backend. `./repos` is the bucket
+`icechunk`, so `s3://icechunk/foo.icechunk` is stored in `./repos/foo.icechunk`.
+
+- **Writes** need the keys from `.env`.
+- **Reads** are anonymous: a bucket policy allows `GetObject` and `ListBucket`
+  for everyone. CORS allows any origin, with `Range` requests and
+  `Content-Range` exposed, so browser tools such as gridlook can read the
+  repositories.
+
+```bash
+cp .env.template .env      # then set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+docker compose up -d       # s3-init applies the public-read policy and CORS, then exits
+
+./virtualize.py wcofs-fields-nowcast --repo s3://icechunk/wcofs.icechunk \
+    --start 2026-10-01 --end 2026-10-31
+```
+
+`.env` is read by `docker compose` (the keys become versitygw's root account)
+and by `virtualize.py` (for `s3://` destinations). Variables already set in
+the shell take precedence. Leave `AWS_ENDPOINT_URL` empty to target AWS
+itself. The anonymous source listing and file reads ignore all `AWS_*`
+variables, so these settings only affect the destination.
+
+Public URL of a repository: `http://localhost:7070/icechunk/<name>.icechunk/`.
+Reading it from Python without credentials:
+
+```python
+storage = ic.s3_storage(bucket="icechunk", prefix="wcofs.icechunk",
+    endpoint_url="http://localhost:7070", allow_http=True,
+    force_path_style=True, anonymous=True, region="us-east-1")
+```
+
+**Write repositories through S3, not straight into `./repos`.** versitygw
+stores each object's ETag as an extended attribute when the object is
+uploaded. Files written directly to `./repos` (for example with
+`--repo ./repos/foo.icechunk`) have no ETag, and Icechunk refuses to open
+them over S3 (`Object should have an etag`). To publish such a repository,
+upload it, e.g. `aws s3 sync --endpoint-url http://localhost:7070
+./some.icechunk s3://icechunk/some.icechunk` from a directory outside
+`./repos`.
+
 ## Notes
 
 - The local-filesystem repository is not safe for concurrent writers: run one
   build at a time per repository.
-- The `s3://` destination is implemented but has not been tested yet.
+- The `s3://` destination has been tested against the local versitygw
+  container (create, append, re-run). It has not been tested against AWS itself.
 - Opening source files runs at roughly one file per second overall; a month of
   WCOFS nowcast fields (248 files) takes about 4 minutes.

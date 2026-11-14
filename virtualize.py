@@ -9,6 +9,7 @@
 #     "obstore==0.12.1",
 #     "obspec-utils==0.9.0",
 #     "pyyaml==6.0.3",
+#     "python-dotenv==1.1.1",
 # ]
 # ///
 """Create or update a virtual Icechunk store over gridded NetCDF4/HDF5 files in
@@ -32,8 +33,15 @@ Examples
     # See what would be indexed, without touching the repository
     ./virtualize.py wcofs-fields-nowcast --start 2026-10-01 --end 2026-10-03 --dry-run
 
-Destination (--repo): a local directory, or s3://bucket/prefix (credentials come
-from the environment, e.g. AWS_ACCESS_KEY_ID; never from this file).
+    # Same, but into the local versitygw S3 container (docker compose up -d)
+    ./virtualize.py wcofs-fields-nowcast --repo s3://icechunk/wcofs.icechunk \\
+        --start 2026-10-01 --end 2026-10-31
+
+Destination (--repo): a local directory, or s3://bucket/prefix. For s3:// the
+standard variables AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_ENDPOINT_URL
+(any S3-compatible server; http:// allowed, path-style addressing) are read from
+the environment, and from a .env file next to this script for anything the
+environment does not set. Credentials are never stored in this file.
 
 Adding another dataset: add an entry to datasets.yml (next to this script, or
 pass --config to use another file), or override any field of
@@ -58,6 +66,7 @@ import importlib.metadata as md
 import json
 import logging
 import math
+import os
 import re
 import sys
 from concurrent.futures import ProcessPoolExecutor
@@ -69,6 +78,7 @@ import numpy as np
 import xarray as xr
 import yaml
 import zarr
+from dotenv import load_dotenv
 from obspec_utils.registry import ObjectStoreRegistry
 from obstore.store import from_url
 from virtualizarr import open_virtual_dataset
@@ -129,10 +139,23 @@ def load_datasets(path: Path = DATASETS_FILE) -> dict[str, Dataset]:
 # --------------------------------------------------------------------------- #
 # Source side: discovery and opening. No destination credentials involved.
 # --------------------------------------------------------------------------- #
+def anonymous_store(url: str):
+    """obstore store for a public source URL.
+
+    skip_signature = anonymous access; without it obstore goes looking for AWS
+    credentials (including the instance-metadata service). obstore also reads
+    AWS_* variables when it builds an S3 store, including for https://...
+    amazonaws.com URLs, but here those variables describe the destination
+    (AWS_ENDPOINT_URL may point at a local server), so they are hidden."""
+    saved = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("AWS_")}
+    try:
+        return from_url(url, skip_signature=True)
+    finally:
+        os.environ.update(saved)
+
+
 def source_store(ds: Dataset, bucket: bool = False):
-    # skip_signature = anonymous access; without it obstore goes looking for
-    # AWS credentials (including the instance-metadata service).
-    return from_url(ds.bucket_url if bucket else ds.http_base, skip_signature=True)
+    return anonymous_store(ds.bucket_url if bucket else ds.http_base)
 
 
 def discover(ds: Dataset, start: dt.date, end: dt.date) -> list[str]:
@@ -164,7 +187,7 @@ def _open_one(args: tuple[str, str, tuple[str, ...]]) -> xr.Dataset:
     """Worker: open one file as a virtual dataset. Runs in a subprocess because
     h5py holds a global lock during I/O, so threads would not overlap requests."""
     url, http_base, loadable = args
-    registry = ObjectStoreRegistry({http_base: from_url(http_base, skip_signature=True)})
+    registry = ObjectStoreRegistry({http_base: anonymous_store(http_base)})
     return open_virtual_dataset(
         url, registry=registry, parser=HDFParser(), loadable_variables=list(loadable)
     )
@@ -231,8 +254,32 @@ def make_storage(repo_arg: str) -> ic.Storage:
         bucket, _, prefix = repo_arg[5:].partition("/")
         if not prefix:
             raise SystemExit("s3:// repositories need a non-empty prefix: s3://bucket/prefix")
-        return ic.s3_storage(bucket=bucket, prefix=prefix, from_env=True)
+        return ic.s3_storage(bucket=bucket, prefix=prefix, **s3_options())
     return ic.local_filesystem_storage(repo_arg)
+
+
+def s3_options() -> dict:
+    """ic.s3_storage keyword arguments from the standard AWS variables.
+
+    AWS_ENDPOINT_URL selects an S3-compatible server (e.g. the local versitygw
+    container); without it this is plain AWS. Explicit keys win; otherwise the
+    AWS SDK's own lookup (profiles, SSO, instance metadata) is used."""
+    env = lambda k: os.environ.get(k) or None  # noqa: E731 (empty counts as unset)
+    endpoint = env("AWS_ENDPOINT_URL")
+    opts: dict = {"region": env("AWS_REGION") or env("AWS_DEFAULT_REGION")}
+    if endpoint:
+        opts |= {
+            "endpoint_url": endpoint,
+            "allow_http": endpoint.startswith("http://"),
+            "force_path_style": True,  # no per-bucket DNS names on a local server
+            "region": opts["region"] or "us-east-1",
+        }
+    key, secret = env("AWS_ACCESS_KEY_ID"), env("AWS_SECRET_ACCESS_KEY")
+    if key and secret:
+        opts |= {"access_key_id": key, "secret_access_key": secret, "session_token": env("AWS_SESSION_TOKEN")}
+    else:
+        opts["from_env"] = True
+    return opts
 
 
 def open_or_create_repo(storage: ic.Storage, ds: Dataset) -> tuple[ic.Repository, bool]:
@@ -464,6 +511,9 @@ def parse_date(s: str) -> dt.date:
 
 
 def main() -> None:
+    # Destination settings (AWS_*) from .env next to the script; the shell's
+    # environment wins over the file.
+    load_dotenv(Path(__file__).with_name(".env"), override=False)
     # --config decides which presets exist, so read it before building the full
     # parser (whose dataset choices come from that file).
     pre = argparse.ArgumentParser(add_help=False)

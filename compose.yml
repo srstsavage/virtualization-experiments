@@ -1,19 +1,54 @@
+# Local S3 (versitygw) for Icechunk repositories.
+#   writes: S3 API on http://localhost:7070 with the keys from .env
+#   reads:  anonymous GET/HEAD/LIST on http://localhost:7070/icechunk/... (CORS: *)
+# ./repos is the bucket "icechunk": ./repos/foo.icechunk is s3://icechunk/foo.icechunk.
 services:
   s3:
-    image: versity/versitygw
+    image: versity/versitygw:v1.10.0
     ports:
       - 7070:7070
-      - 8080:8080
     volumes:
-      - ./repos:/data/s3/localhost
+      - ./repos:/data/s3/icechunk
     environment:
-      ROOT_ACCESS_KEY: "${VGW_S3_ACCESS_KEY:-asdf}"
-      ROOT_SECRET_KEY: "${VGW_S3_SECRET_KEY:-asdf}"
+      ROOT_ACCESS_KEY: "${AWS_ACCESS_KEY_ID:?set AWS_ACCESS_KEY_ID in .env (see .env.template)}"
+      ROOT_SECRET_KEY: "${AWS_SECRET_ACCESS_KEY:?set AWS_SECRET_ACCESS_KEY in .env (see .env.template)}"
       VGW_BACKEND: posix
       VGW_BACKEND_ARGS: /data/s3
-      VGW_WEBSITE_PORT: ":8080"
       VGW_CORS_ALLOW_ORIGIN: "*"
-      VGW_WEBSITE_DOMAIN: localhost
+      VGW_HEALTH: /health
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:7070/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  # One-shot: make the bucket readable by anyone (GetObject + ListBucket only).
+  # Writes still need the root keys. Safe to re-run.
+  s3-init:
+    image: amazon/aws-cli:2.38.5
+    depends_on:
+      s3:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY}"
+      AWS_ENDPOINT_URL: http://s3:7070
+      AWS_REGION: us-east-1
+    # CORS: browsers doing range reads need Content-Range exposed.
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        aws s3api put-bucket-policy --bucket icechunk --policy '{
+          "Version": "2012-10-17",
+          "Statement": [{"Effect": "Allow", "Principal": "*",
+            "Action": ["s3:GetObject", "s3:ListBucket"],
+            "Resource": ["arn:aws:s3:::icechunk", "arn:aws:s3:::icechunk/*"]}]}'
+        aws s3api put-bucket-cors --bucket icechunk --cors-configuration '{
+          "CORSRules": [{"AllowedOrigins": ["*"], "AllowedMethods": ["GET", "HEAD"],
+            "AllowedHeaders": ["*"], "MaxAgeSeconds": 3600,
+            "ExposeHeaders": ["Content-Range", "Content-Length", "ETag", "Last-Modified", "Accept-Ranges"]}]}'
+        echo "bucket icechunk: public read policy and CORS applied"
+
   #gridlook:
   #  build:
   #    dockerfile_inline:
