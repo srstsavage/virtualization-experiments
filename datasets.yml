@@ -16,6 +16,15 @@
 #                      that reuse another coordinate's references, e.g. a plain
 #                      lat/lon for viewers that only look for those names
 #
+#   Source reads (all optional; used when building overviews and validating,
+#   never saved in the repository; --source-* flags override them):
+#   source_concurrency      (default 32) concurrent HTTP requests to the source
+#   source_connect_timeout  (default 30) seconds per TCP/TLS connect
+#   source_timeout          (default 300) seconds per request
+#   source_http_retries     (default 10) tries per chunk request, incl. the first
+#   source_read_retries     (default 5) retries of a whole failed read (30 s, 60 s, ...)
+#   e.g. for a slow or NAT-limited network:  source_concurrency: 8
+#
 # Quote regexes with single quotes so backslashes are kept as-is. Quote list
 # entries that start with * or [ (YAML gives those a meaning), and any pattern
 # with [...] inside an inline [a, b] list.

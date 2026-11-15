@@ -55,6 +55,12 @@ standard variables AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_ENDPOINT_URL
 the environment, and from a .env file next to this script for anything the
 environment does not set. Credentials are never stored in this file.
 
+Flaky networks: overview builds and validation read real bytes from the
+source. If they fail with connect timeouts, lower --source-concurrency (e.g.
+8..16) or set source_concurrency in the preset; see also --source-* timeouts
+and retries. Each batch is committed, so a smaller --batch-size loses less
+work on a failure, and re-running resumes (indexed files are skipped).
+
 Adding another dataset: add an entry to datasets.yml (next to this script, or
 pass --config to use another file), or override any field of
 an existing entry from the command line (--key-template, --file-regex, ...).
@@ -141,6 +147,14 @@ class Dataset:
     # Present = built by default; --overviews/--no-overviews override.
     # Needs `rectilinear` (or 1-D lat/lon coordinates).
     overviews: dict | None = None
+    # Reading the source (overview builds and validation fetch real bytes from
+    # it). A burst of hundreds of new connections to one host can make connects
+    # time out on home/NAT networks; these keep reads to a sane rate and retry.
+    source_concurrency: int = 32  # concurrent HTTP requests (icechunk + zarr)
+    source_connect_timeout: int = 30  # seconds per TCP/TLS connect (object_store default: 5)
+    source_timeout: int = 300  # seconds per GET, whole request
+    source_http_retries: int = 10  # tries per chunk GET, incl. the first (backoff 0.5 s .. 30 s)
+    source_read_retries: int = 5  # retries of a whole failed read, 30 s * 2^i apart (max 5 min)
 
     @property
     def url_prefix(self) -> str:
@@ -148,6 +162,8 @@ class Dataset:
 
 
 DATASETS_FILE = Path(__file__).with_name("datasets.yml")
+SOURCE_FIELDS = ("source_concurrency", "source_connect_timeout", "source_timeout",
+                 "source_http_retries", "source_read_retries")
 
 
 def load_datasets(path: Path = DATASETS_FILE) -> dict[str, Dataset]:
@@ -168,6 +184,10 @@ def load_datasets(path: Path = DATASETS_FILE) -> dict[str, Dataset]:
                 fields[key] = {str(k): str(v) for k, v in fields[key].items()}
         if fields.get("rectilinear") and set(fields["rectilinear"]) != {"lat", "lon"}:
             raise SystemExit(f"{path}: dataset {name!r}: rectilinear needs exactly the keys lat and lon")
+        for key in SOURCE_FIELDS:
+            if key in fields and (isinstance(fields[key], bool) or not isinstance(fields[key], int)
+                                  or fields[key] < (0 if key == "source_read_retries" else 1)):
+                raise SystemExit(f"{path}: dataset {name!r}: {key} must be a positive integer")
         if "overviews" in fields:
             ov = fields["overviews"]
             if ov is None:
@@ -414,9 +434,39 @@ def s3_options() -> dict:
     return opts
 
 
+def source_config(ds: Dataset) -> ic.RepositoryConfig:
+    """Runtime-only settings for reading the source while building: bounded
+    concurrency, patient connects, more retries. Never saved to the repository
+    (readers keep the plain persisted container)."""
+    store = ic.http_store({"connect_timeout": f"{ds.source_connect_timeout}s",
+                           "timeout": f"{ds.source_timeout}s"})
+    return ic.RepositoryConfig(
+        max_concurrent_requests=ds.source_concurrency,
+        storage=ic.StorageSettings(retries=ic.StorageRetriesSettings(
+            max_tries=ds.source_http_retries, initial_backoff_ms=500, max_backoff_ms=30_000)),
+        virtual_chunk_containers={ds.url_prefix: ic.VirtualChunkContainer(url_prefix=ds.url_prefix, store=store)},
+    )
+
+
+def read_source(fn, what: str, retries: int):
+    """fn() (a read that fetches source bytes), retried after a pause when the
+    source cannot be reached even after the per-request HTTP retries."""
+    for attempt in range(retries + 1):
+        try:
+            return fn()
+        except ic.StorageError as e:
+            if "virtual reference" not in str(e) or attempt == retries:
+                raise
+            wait = min(300, 30 * 2**attempt)
+            log.warning("source read of %s failed (%s); retry %d/%d in %ds", what,
+                        str(e).splitlines()[0][:300], attempt + 1, retries, wait)
+            time.sleep(wait)
+
+
 def open_or_create_repo(storage: ic.Storage, ds: Dataset) -> tuple[ic.Repository, bool]:
     """Create the repository if (and only if) it does not exist; any other error
-    (auth, network, config) must surface, so there is no blanket except."""
+    (auth, network, config) must surface, so there is no blanket except.
+    The returned handle carries source_config (not persisted)."""
     auth = {ds.url_prefix: ic.credentials.HttpAccess}  # anonymous HTTP, but still explicit
     container = ic.VirtualChunkContainer(url_prefix=ds.url_prefix, store=ic.http_store())
     if not ic.Repository.exists(storage):
@@ -424,14 +474,14 @@ def open_or_create_repo(storage: ic.Storage, ds: Dataset) -> tuple[ic.Repository
         config.set_virtual_chunk_container(container)
         repo = ic.Repository.create(storage, config=config, authorize_virtual_chunk_access=auth)
         repo.save_config()  # persist, so public readers discover the container
-        return repo, True
+        return repo.reopen(config=repo.config.merge(source_config(ds)), authorize_virtual_chunk_access=auth), True
     repo = ic.Repository.open(storage, authorize_virtual_chunk_access=auth)
     known = (repo.config.virtual_chunk_containers or {}).keys()
     if ds.url_prefix not in known:
         repo.config.set_virtual_chunk_container(container)
         repo.save_config()
         repo = ic.Repository.open(storage, authorize_virtual_chunk_access=auth)
-    return repo, False
+    return repo.reopen(config=repo.config.merge(source_config(ds)), authorize_virtual_chunk_access=auth), False
 
 
 def read_committed(repo: ic.Repository, dim: str) -> xr.Dataset | None:
@@ -652,7 +702,7 @@ def _first_write_encoding(plan, level: int, lvl0: xr.Dataset, variables: list[st
 
 def update_overviews(session: ic.Session, vds: xr.Dataset, ov: Overviews, dim: str,
                      start: int, *, create: bool = False, replace: bool = False,
-                     time_chunk: int = 4096) -> None:
+                     time_chunk: int = 4096, read_retries: int = 5) -> None:
     """Write the time steps of `vds` (positions start.. in the root arrays) to the
     overview pyramid: references to multiscale/0, coarsened data to 1..N.
     create: first write of the repository; replace: rewrite existing steps (--force)."""
@@ -695,7 +745,8 @@ def update_overviews(session: ic.Session, vds: xr.Dataset, ov: Overviews, dim: s
         p1 = min(start + n, p0 + per_pass)
         data: list[dict[str, np.ndarray]] = [{} for _ in range(levels)]
         for v in variables:
-            a = lvl0[v].isel({dim: slice(p0, p1)}).values  # the only source read
+            a = read_source(lambda: lvl0[v].isel({dim: slice(p0, p1)}).values,  # the only source read
+                            f"{v} steps {p0}..{p1 - 1}", read_retries)
             for k in range(1, levels):
                 a = reduce2(a, ov.method)
                 if a.shape[-2:] != shapes[k]:
@@ -728,7 +779,7 @@ def update_overviews(session: ic.Session, vds: xr.Dataset, ov: Overviews, dim: s
     log.info("overviews: %d step(s) in %.0fs", n, time.time() - t_start)
 
 
-def validate_overviews(store, dim: str, root_times: np.ndarray) -> None:
+def validate_overviews(store, dim: str, root_times: np.ndarray, read_retries: int = 5) -> None:
     """Every level holds the root's time steps at its declared shape, and the last
     step of each level is the reduction of the level below it."""
     root = zarr.open_group(store, path=OVERVIEW_GROUP, mode="r")
@@ -743,9 +794,9 @@ def validate_overviews(store, dim: str, root_times: np.ndarray) -> None:
     # Smallest variable per step keeps the read-back cheap.
     var = min(levels[1].data_vars, key=lambda v: math.prod(levels[1][v].shape[1:]))
     sel = {d: 0 for d in levels[0][var].dims if d not in (dim, "lat", "lon")} | {dim: -1}
-    prev = levels[0][var].isel(sel).values
+    prev = read_source(lambda: levels[0][var].isel(sel).values, f"{var} (level 0)", read_retries)
     for k in range(1, len(levels)):
-        got = levels[k][var].isel(sel).values
+        got = read_source(lambda: levels[k][var].isel(sel).values, f"{var} (level {k})", read_retries)
         assert np.allclose(reduce2(prev, method), got, equal_nan=True, rtol=1e-5, atol=1e-6), \
             f"overview level {k} of {var} is not the {method} of level {k - 1}"
         prev = got
@@ -758,7 +809,7 @@ def validate_overviews(store, dim: str, root_times: np.ndarray) -> None:
 # --------------------------------------------------------------------------- #
 def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
     dim = ds.concat_dim
-    zarr.config.set({"async.concurrency": 128})
+    zarr.config.set({"async.concurrency": ds.source_concurrency})
 
     urls = discover(ds, args.start, args.end)
     log.info("discovered %d files for %s..%s", len(urls), args.start, args.end)
@@ -848,7 +899,8 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
                 part = combine([vds_list[pos[k]] for k in run], ds)
                 replace_steps(session, part, dim, start=int(idx[run[0]]))
                 if ov:
-                    update_overviews(session, part, ov, dim, int(idx[run[0]]), replace=True)
+                    update_overviews(session, part, ov, dim, int(idx[run[0]]), replace=True,
+                                     read_retries=ds.source_read_retries)
             log.info("batch %d: replacing %d already-indexed step(s)", i // args.batch_size, int(replace.sum()))
         if new.any():
             vds = combine([v for v, n in zip(vds_list, new) if n], ds)
@@ -862,14 +914,16 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
                 vds[dim].encoding.pop("preferred_chunks", None)
                 vds.vz.to_icechunk(session.store)
                 if ov:
-                    update_overviews(session, vds, ov, dim, 0, create=True, time_chunk=ds.time_chunk)
+                    update_overviews(session, vds, ov, dim, 0, create=True, time_chunk=ds.time_chunk,
+                                     read_retries=ds.source_read_retries)
             else:
                 static = [n for n, v in vds.variables.items() if dim not in v.dims]
                 appended = vds.drop_vars(static)
                 appended.attrs = {}  # appending would otherwise overwrite the global attrs
                 appended.vz.to_icechunk(session.store, append_dim=dim)
                 if ov:
-                    update_overviews(session, vds, ov, dim, int(have.size), time_chunk=ds.time_chunk)
+                    update_overviews(session, vds, ov, dim, int(have.size), time_chunk=ds.time_chunk,
+                                     read_retries=ds.source_read_retries)
         n_new, n_replaced = int(new.sum()), int(replace.sum())
         verb = "index" if not n_replaced else "re-index" if not n_new else "index/re-index"
         snapshot = session.commit(
@@ -913,14 +967,15 @@ def validate(storage: ic.Storage, ds: Dataset, expected_steps: int, expected_las
     var = next(n for n, v in out.data_vars.items() if ds.concat_dim in v.dims and v.ndim >= 3)
     da = out[var]
     window = {d: slice(da.sizes[d] // 2, da.sizes[d] // 2 + 4) for d in da.dims if d != ds.concat_dim}
-    sample = da.isel(window).isel({ds.concat_dim: -1}).load()  # fetches a source chunk
+    sample = read_source(lambda: da.isel(window).isel({ds.concat_dim: -1}).load(),  # fetches a source chunk
+                         var, ds.source_read_retries)
     log.info(
         "validated: %d steps, %s .. %s; read %s%s from the source (dtype %s, %d finite of %d)",
         t.size, t[0], t[-1], var, tuple(sample.shape), sample.dtype,
         int(np.isfinite(sample.values).sum()), sample.size,
     )
     if stored_overviews(repo, ds.concat_dim) is not None:
-        validate_overviews(store, ds.concat_dim, t)
+        validate_overviews(store, ds.concat_dim, t, ds.source_read_retries)
 
 
 # --------------------------------------------------------------------------- #
@@ -1233,7 +1288,7 @@ def main() -> None:
     p.add_argument("--repo", help="repository: local directory or s3://bucket/prefix")
     p.add_argument("--start", type=parse_date, required=True, help="first day (YYYY-MM-DD), by folder date")
     p.add_argument("--end", type=parse_date, required=True, help="last day, inclusive")
-    p.add_argument("--batch-size", type=int, default=64, help="files per commit (default 64)")
+    p.add_argument("--batch-size", type=int, default=32, help="files per commit (default 32)")
     p.add_argument("--workers", type=int, default=8, help="parallel file-opening processes (default 8)")
     p.add_argument("--dry-run", action="store_true", help="list the files and exit")
     p.add_argument("--no-validate", action="store_true", help="skip the final read-back check")
@@ -1252,6 +1307,19 @@ def main() -> None:
     p.add_argument("--rectilinear",
                    help="regular grid given as 2-D arrays, 'lat=NAME,lon=NAME' ('' for none)")
     p.add_argument("--no-catalog", action="store_true", help="do not update the catalogs after the build")
+    srcg = p.add_argument_group(
+        "source reads",
+        "How overview builds and validation read the source (defaults, or the preset's source_* fields). "
+        "On a network where connects time out, lower --source-concurrency.")
+    srcg.add_argument("--source-concurrency", type=int, metavar="N",
+                      help="concurrent HTTP requests (default 32)")
+    srcg.add_argument("--source-connect-timeout", type=int, metavar="SECONDS",
+                      help="TCP/TLS connect timeout (default 30)")
+    srcg.add_argument("--source-timeout", type=int, metavar="SECONDS", help="timeout per request (default 300)")
+    srcg.add_argument("--source-http-retries", type=int, metavar="N",
+                      help="tries per chunk request, including the first (default 10)")
+    srcg.add_argument("--source-read-retries", type=int, metavar="N",
+                      help="retries of a whole failed read, 30 s, 60 s, ... apart (default 5)")
     ovg = p.add_argument_group(
         "multiscale overviews",
         "Coarsened copies of selected variables in the group 'multiscale' (GeoZarr multiscales), "
@@ -1271,7 +1339,7 @@ def main() -> None:
     if not args.dry_run and not args.repo:
         p.error("--repo is required unless --dry-run")
 
-    overrides = {k: v for k, v in {
+    overrides = {k: v for k, v in ({
         "bucket_url": args.bucket_url, "http_base": args.http_base, "key_root": args.key_root,
         "key_template": args.key_template, "file_regex": args.file_regex,
         "concat_dim": args.concat_dim, "time_chunk": args.time_chunk,
@@ -1281,8 +1349,11 @@ def main() -> None:
             dict(pair.split("=", 1) for pair in args.coord_aliases.split(",") if pair),
         "rectilinear": None if args.rectilinear is None else
             dict(pair.split("=", 1) for pair in args.rectilinear.split(",") if pair),
-    }.items() if v is not None}
+    } | {k: getattr(args, k) for k in SOURCE_FIELDS}).items() if v is not None}
     ds = dataclasses.replace(datasets[args.dataset], **overrides)
+    for k in SOURCE_FIELDS:
+        if getattr(ds, k) < (0 if k == "source_read_retries" else 1):
+            p.error(f"--{k.replace('_', '-')} must be positive")
     if ds.concat_dim not in ds.loadable:
         p.error("--loadable must include the concat dimension")
     if ds.rectilinear:
