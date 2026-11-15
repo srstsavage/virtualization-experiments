@@ -6,9 +6,11 @@
   <title>Overview Maps</title>
   <link rel="stylesheet" href="maplibre-gl.css">
   <style>
-    :root { --bg: #ffffff; --fg: #1f2933; --muted: #5f6b7a; --line: #d5dbe1; --panel: rgba(255,255,255,.94); }
+    :root { --bg: #ffffff; --fg: #1f2933; --muted: #5f6b7a; --line: #d5dbe1; --panel: rgba(255,255,255,.94);
+      --accent: #1a73e8; --ov: #0f766e; --ov-bg: #ccfbf1; --raw: #b45309; --raw-bg: #fef3c7; --local: #5f6b7a; --local-bg: #e5e9ee; }
     @media (prefers-color-scheme: dark) {
-      :root { --bg: #111418; --fg: #e4e8ec; --muted: #9aa5b1; --line: #33393f; --panel: rgba(22,26,31,.94); }
+      :root { --bg: #111418; --fg: #e4e8ec; --muted: #9aa5b1; --line: #33393f; --panel: rgba(22,26,31,.94);
+        --accent: #6ea8fe; --ov: #5eead4; --ov-bg: #123b37; --raw: #fbbf24; --raw-bg: #45330f; --local: #9aa5b1; --local-bg: #2a3037; }
     }
     html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
       font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -26,7 +28,84 @@
     #legend-labels { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; }
     #status { margin-top: 8px; color: var(--muted); font-size: 12px; min-height: 1.4em; }
     #status.error { color: #c0392b; }
-    #timelabel { float: right; color: var(--fg); }
+    /* current time: the main control */
+    #timelabel { display: block; font-size: 15px; font-weight: 600; color: var(--fg); font-variant-numeric: tabular-nums; }
+    /* neutral track, only the thumb (the displayed time) in colour; the thumb stays 16px
+       wide, which THUMB in main.js assumes */
+    #time { margin: 4px 0 0; height: 16px; -webkit-appearance: none; appearance: none; background: transparent;
+      border: none; cursor: pointer; }
+    #time::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--line); }
+    #time::-moz-range-track { height: 4px; border-radius: 2px; background: var(--line); }
+    #time::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; margin-top: -6px;
+      border-radius: 50%; border: none; background: var(--accent); }
+    #time::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; border: none; background: var(--accent); }
+    #time:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    /* date under the pointer on the time slider and loop band */
+    #timebars { position: relative; }
+    #timetip { position: absolute; z-index: 3; transform: translate(-50%, -100%); margin-top: -4px; pointer-events: none;
+      padding: 2px 6px; border-radius: 4px; background: var(--fg); color: var(--bg); font-size: 11px; white-space: nowrap;
+      font-variant-numeric: tabular-nums; }
+    #timetip[hidden] { display: none; }
+    /* loop window under the time slider; inset by half the thumb so it lines up with the thumb's travel */
+    /* a 16px hit area around a 6px track, so it is easy to drag on */
+    #loopband { position: relative; height: 16px; margin: 0 8px; cursor: ew-resize; touch-action: none; user-select: none; }
+    #loopband::before { content: ""; position: absolute; left: 0; right: 0; top: 5px; height: 6px; border-radius: 3px; background: var(--line); }
+    #loopband span { position: absolute; top: 5px; height: 6px; border-radius: 3px; background: var(--ov); }
+    #loopband:hover span { top: 4px; height: 8px; }
+    #loopbox { margin-top: 10px; padding: 6px 8px 8px; border: 1px solid var(--line); border-radius: 6px; }
+    #loopbox legend { padding: 0 4px; color: var(--muted); font-size: 12px; }
+    #loopbox .bounds { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 6px; align-items: center; }
+    #loopbox .bounds label { margin: 0; }
+    #loopbox select { font-size: 12px; }
+    .playrow { margin-top: 6px; }
+    #play { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 4px;
+      padding: 3px 5px; cursor: pointer; flex: 2; }
+    #play[aria-pressed="true"] { background: var(--ov-bg); border-color: var(--ov); }
+    #play:disabled { opacity: .5; cursor: default; }
+    .climrow > input { min-width: 0; }
+    #fitview { flex: none; font: inherit; font-size: 12px; color: var(--fg); background: var(--bg); border: 1px solid var(--line);
+      border-radius: 4px; padding: 3px 7px; cursor: pointer; white-space: nowrap; }
+    #fitview:disabled { opacity: .5; cursor: progress; }
+    /* data loads widget */
+    #loads { position: absolute; left: 12px; bottom: 28px; width: 440px; max-width: calc(100% - 24px);
+      box-sizing: border-box; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0,0,0,.15); z-index: 2; font-size: 12px; display: flex; flex-direction: column;
+      max-height: 40vh; }
+    #loads .loads-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px 4px; }
+    #loads .loads-head strong { font-size: 13px; }
+    #loads .inflight { color: var(--muted); display: inline-flex; align-items: center; gap: 5px; flex: 1; }
+    #loads button { font: inherit; color: var(--fg); background: transparent; border: 1px solid var(--line);
+      border-radius: 4px; padding: 1px 8px; cursor: pointer; width: auto; }
+    #loads button.toggle { border: none; padding: 0 2px; }
+    #loads .totals { display: flex; gap: 6px; flex-wrap: wrap; padding: 2px 10px 6px; }
+    #loads .chip { display: inline-flex; align-items: center; gap: 5px; padding: 1px 7px; border-radius: 10px;
+      background: var(--chip-bg); color: var(--fg); }
+    #loads .sw { width: 8px; height: 8px; border-radius: 2px; background: var(--chip); }
+    #loads .list { list-style: none; margin: 0; padding: 0 6px 6px; overflow-y: auto; border-top: 1px solid var(--line); }
+    #loads.collapsed .list { display: none; }
+    #loads .src-overview { --chip: var(--ov); --chip-bg: var(--ov-bg); }
+    #loads .src-raw { --chip: var(--raw); --chip-bg: var(--raw-bg); }
+    #loads .src-local, #loads .src-pending { --chip: var(--local); --chip-bg: var(--local-bg); }
+    #loads .load { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; column-gap: 8px;
+      padding: 4px 4px 4px 6px; margin-top: 4px;
+      border-left: 3px solid var(--chip); border-radius: 3px; }
+    #loads .load.src-raw { background: color-mix(in srgb, var(--raw-bg) 55%, transparent); }
+    #loads .badge { min-width: 78px; text-align: center; font-weight: 600; font-size: 11px; padding: 1px 5px;
+      border-radius: 3px; background: var(--chip-bg); color: var(--chip); }
+    #loads .what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #loads .file { grid-column: 2 / -1; display: flex; min-width: 0; white-space: nowrap; font-family: ui-monospace, monospace; font-size: 11px; }
+    #loads .file .name { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    #loads .file .span { flex: none; }
+    #loads .meta { color: var(--muted); white-space: nowrap; }
+    #loads .st-aborted .what { text-decoration: line-through; color: var(--muted); }
+    #loads .err { color: #c0392b; }
+    #loads .muted { color: var(--muted); }
+    #loads .empty { padding: 8px 4px; }
+    #loads .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--chip, var(--muted));
+      animation: pulse 1s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: .25; } }
+    @media (prefers-reduced-motion: reduce) { #loads .dot { animation: none; } }
+    @media (max-width: 600px) { #loads { max-height: 30vh; } }
   </style>
 </head>
 <body>
@@ -37,18 +116,44 @@
     <select id="repo"></select>
     <label for="variable">Variable</label>
     <select id="variable"></select>
-    <label for="time">Time <span id="timelabel"></span></label>
-    <input id="time" type="range" min="0" max="0" value="0">
+    <label for="level">Level</label>
+    <select id="level"><option value="auto">Auto (by zoom)</option></select>
+    <label for="time">Displayed time</label>
+    <output id="timelabel" for="time"></output>
+    <div id="timebars">
+      <input id="time" type="range" min="0" max="0" value="0">
+      <div id="loopband"><span></span></div>
+      <div id="timetip" role="tooltip" hidden></div>
+    </div>
+    <fieldset id="loopbox">
+      <legend>Animation loop</legend>
+      <div class="bounds">
+        <label for="tstart">Start</label><select id="tstart"></select>
+        <label for="tend">End</label><select id="tend"></select>
+      </div>
+      <div class="row playrow">
+        <button id="play" type="button" aria-pressed="false">▶ Play</button>
+        <select id="delay" aria-label="Delay between steps" title="Delay between steps, after each step has loaded">
+          <option value="2000">2 s</option><option value="1000">1 s</option><option value="500">0.5 s</option>
+          <option value="333">0.33 s</option><option value="200">0.2 s</option><option value="100" selected>0.1 s</option>
+        </select>
+      </div>
+    </fieldset>
     <div id="depthbox">
       <label for="depth">Depth</label>
       <select id="depth"></select>
     </div>
-    <label>Colour range</label>
-    <div class="row"><input id="cmin" type="number" step="any"><input id="cmax" type="number" step="any"></div>
+    <label for="cmin">Colour range</label>
+    <div class="row climrow">
+      <input id="cmin" type="number" step="any" aria-label="Colour range minimum">
+      <input id="cmax" type="number" step="any" aria-label="Colour range maximum">
+      <button id="fitview" type="button" title="Set the range to the minimum and maximum of the data in view, at the level drawn">Fit to view</button>
+    </div>
     <div id="legend"></div>
     <div id="legend-labels"><span id="lmin"></span><span id="lunits"></span><span id="lmax"></span></div>
     <div id="status">Loading…</div>
   </div>
+  <section id="loads" aria-label="Data loads"></section>
   <script type="module" src="bundle.js"></script>
 </body>
 </html>

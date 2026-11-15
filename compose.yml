@@ -105,7 +105,7 @@ services:
   # gridlook catalog's entries tagged "overviews" (read from the S3 server in the
   # browser), or opens ?repo=<repository URL>. Coarse levels come from the
   # repository, full resolution through its virtual references from the source.
-  maps:
+  viewer:
     build:
       context: ./viewer
       dockerfile_inline: |
@@ -113,7 +113,7 @@ services:
         WORKDIR /app
         COPY package.json package-lock.json ./
         RUN npm ci
-        COPY index.html main.js ./
+        COPY index.html main.js loads.js ./
         RUN npm run build
 
         FROM python:3.12-slim

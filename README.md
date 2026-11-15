@@ -409,9 +409,24 @@ repositories that the gridlook catalog tags `overviews`, or opens one directly
 with `http://localhost:8080/?repo=http://localhost:7070/icechunk/<name>.icechunk`.
 Coarse levels come from the local S3 server; full resolution is read through
 the virtual references straight from NOAA's bucket (which allows browser
-reads). Controls: repository, variable, time, depth, colour range (defaults to
-the 2nd–98th percentile of the coarsest level); click the map for a value. The
+reads). Controls: repository, variable, level (Auto picks it by zoom; choosing
+one locks the map to it at every zoom, also `?level=N`), displayed time (the main slider; hovering it or the loop band shows the date there), an
+animation loop (start and end times, default the whole series, also
+`?from=N&to=N`; a band under the slider shows the window; drag on it to select a new one), Play (steps
+through the loop and wraps from end back to start, waiting for each step to
+finish loading and then a chosen delay, 2 s to 0.1 s, default 0.1 s), depth, colour range (defaults to
+the 2nd–98th percentile of the coarsest level; **Fit to view** sets it to the
+min and max of the data in view, at the level drawn); click the map for a value. The
 basemap is OpenStreetMap's tile server, so it needs internet access.
+
+The map starts zoomed out to the coarsest overview level, and the status line
+names the level the current zoom reads. zarr-layer moves to a finer level as
+soon as the coarser one would be stretched (for WCOFS: L2 up to zoom ≈ 3.1, L1
+to ≈ 4.1, then full resolution from NOAA). The **Data loads** panel (bottom left, collapsed at first; ▸ expands it)
+lists every chunk read with its level, variable and chunk index, and totals per
+source: overview reads from the repository in teal, full-resolution reads from
+NOAA in amber with the source file and byte offset (hover for the full URL and
+range).
 
 Other clients that read GeoZarr multiscales are OpenLayers' `GeoZarr` source and
 GDAL ≥ 3.13 (QGIS), but those read plain Zarr, not Icechunk.
