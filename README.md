@@ -39,9 +39,18 @@ installed by `uv` on first run. The only requirement is `uv` (provided here by
     --start 2026-10-01 --end 2026-10-31
 ```
 
-`--start` and `--end` are inclusive and select the provider's daily folders.
-A WCOFS nowcast folder for day D covers D-1 06:00 to D 03:00, so the store for
-October starts at 2026-09-30 06:00.
+`--start` and `--end` are inclusive and select by the data's valid time (the
+concat coordinate), in UTC. Each is a date (`2026-10-01`) or a datetime
+(`2026-10-01T06:00`, `2026-10-01 06:00`; a `Z` suffix is fine, other UTC
+offsets are refused). A date alone as `--end` covers that whole day, up to
+00:00 of the next, so the command above indexes 2026-10-01 00:00 to
+2026-10-31 21:00 (WCOFS is 3-hourly).
+
+The provider files data by day folder, and a folder does not hold exactly that
+day's data (a WCOFS nowcast folder for day D covers D-1 06:00 to D 03:00), so
+the script also lists `folder_margin_days` (default 1) folders beyond each end of
+the range, opens the candidates, and keeps only the files whose valid time is in
+the range.
 
 ## Update a store
 
@@ -63,7 +72,9 @@ back-filling earlier dates is refused (rebuild into a new repository instead).
 ./virtualize.py wcofs-fields-nowcast --start 2026-10-01 --end 2026-10-03 --dry-run
 ```
 
-Lists the source files that would be indexed. No repository is needed.
+Lists the source files that would be indexed, with their valid times. The
+candidate files are opened (metadata only) to read those times. No repository
+is needed.
 
 ## Options
 
@@ -72,7 +83,8 @@ Lists the source files that would be indexed. No repository is needed.
 | `dataset` | — | Preset name from the config file (`wcofs-fields-nowcast`, `ciofs-fields-nowcast`, `wcofs-regulargrid-nowcast`, `ciofs-regulargrid-nowcast`) |
 | `--config` | `datasets.yml` next to the script | YAML file of dataset presets |
 | `--repo` | — | Local directory, or `s3://bucket/prefix` (settings from `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL`; see [Local S3](#local-s3-versitygw)). Required unless `--dry-run` |
-| `--start`, `--end` | — | Date range, `YYYY-MM-DD`, inclusive |
+| `--start`, `--end` | — | Valid-time range, UTC, inclusive: `YYYY-MM-DD` or `YYYY-MM-DDTHH[:MM[:SS]]`. A date-only `--end` includes its whole day |
+| `--folder-margin-days` | 1 (or preset) | Day folders listed beyond each end of the range, for data filed under a neighbouring day |
 | `--batch-size` | 64 | Files per commit. A failed run resumes from the last commit |
 | `--workers` | 8 | Processes opening source files in parallel |
 | `--dry-run` | off | List the files and exit |

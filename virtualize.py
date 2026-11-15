@@ -31,6 +31,10 @@ Examples
     ./virtualize.py wcofs-fields-nowcast --repo ./wcofs.icechunk \\
         --start 2026-10-15 --end 2026-10-16 --force
 
+    # Cut at hours instead of whole days (valid times, UTC, both inclusive)
+    ./virtualize.py wcofs-fields-nowcast --repo ./wcofs.icechunk \\
+        --start 2026-11-15T00:00 --end 2026-11-15T12:00
+
     # See what would be indexed, without touching the repository
     ./virtualize.py wcofs-fields-nowcast --start 2026-10-01 --end 2026-10-03 --dry-run
 
@@ -126,6 +130,10 @@ class Dataset:
     # Variables to materialize (small ones only!). The concat coordinate must be
     # included. Everything else stays a virtual reference.
     loadable: tuple[str, ...] = ()
+    # Days of folders scanned on each side of --start/--end. The range selects
+    # valid times, and a folder named for day D can hold data of neighbouring
+    # days (WCOFS: D-1 06:00 .. D 03:00).
+    folder_margin_days: int = 1
     time_chunk: int = 4096  # chunk length of the (materialized) concat coordinate
     # Global attributes naming one particular run/file (they would otherwise end
     # up describing whichever file was indexed last). Attribute names; each may
@@ -188,6 +196,10 @@ def load_datasets(path: Path = DATASETS_FILE) -> dict[str, Dataset]:
             if key in fields and (isinstance(fields[key], bool) or not isinstance(fields[key], int)
                                   or fields[key] < (0 if key == "source_read_retries" else 1)):
                 raise SystemExit(f"{path}: dataset {name!r}: {key} must be a positive integer")
+        if "folder_margin_days" in fields and (isinstance(fields["folder_margin_days"], bool)
+                                               or not isinstance(fields["folder_margin_days"], int)
+                                               or fields["folder_margin_days"] < 0):
+            raise SystemExit(f"{path}: dataset {name!r}: folder_margin_days must be an integer >= 0")
         if "overviews" in fields:
             ov = fields["overviews"]
             if ov is None:
@@ -227,14 +239,62 @@ def source_store(ds: Dataset, bucket: bool = False):
     return anonymous_store(ds.bucket_url if bucket else ds.http_base)
 
 
-def discover(ds: Dataset, start: dt.date, end: dt.date) -> list[str]:
-    """Return the sorted public HTTPS URLs of all files for days start..end."""
+@dataclass(frozen=True)
+class TimeArg:
+    """A --start/--end value: a UTC time, or a whole day (date given alone)."""
+    when: dt.datetime  # naive, UTC
+    date_only: bool
+
+    def __str__(self) -> str:
+        return self.when.date().isoformat() if self.date_only else self.when.isoformat()
+
+
+def parse_time(s: str) -> TimeArg:
+    """YYYY-MM-DD or an ISO datetime (YYYY-MM-DDTHH[:MM[:SS]], 'T' or space),
+    always UTC. A Z/+00:00 suffix is allowed; other offsets are refused."""
+    try:
+        return TimeArg(dt.datetime.combine(dt.date.fromisoformat(s), dt.time()), True)
+    except ValueError:
+        pass
+    try:
+        t = dt.datetime.fromisoformat(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid time {s!r}; use YYYY-MM-DD or YYYY-MM-DDTHH[:MM[:SS]] (UTC)")
+    if t.tzinfo is not None:
+        if t.utcoffset() != dt.timedelta(0):
+            raise argparse.ArgumentTypeError(f"{s!r}: times are UTC; drop the offset")
+        t = t.replace(tzinfo=None)
+    return TimeArg(t, False)
+
+
+def time_bounds(start: TimeArg, end: TimeArg) -> tuple[np.datetime64, np.datetime64, bool]:
+    """(lower, upper, upper_inclusive). A date-only end covers its whole day,
+    i.e. up to but not including 00:00 of the next day."""
+    lo = np.datetime64(start.when, "ns")
+    if end.date_only:
+        return lo, np.datetime64(end.when + dt.timedelta(days=1), "ns"), False
+    return lo, np.datetime64(end.when, "ns"), True
+
+
+def in_range(times: np.ndarray, start: TimeArg, end: TimeArg) -> np.ndarray:
+    """Which of `times` (datetime64) fall in start..end, both inclusive."""
+    lo, hi, incl = time_bounds(start, end)
+    return (times >= lo) & ((times <= hi) if incl else (times < hi))
+
+
+def discover(ds: Dataset, start: TimeArg, end: TimeArg) -> list[str]:
+    """Return the sorted public HTTPS URLs of all files in the day folders that
+    can hold data of start..end (the range plus folder_margin_days each side).
+    The files still have to be filtered by their valid time (in_range)."""
     store = source_store(ds, bucket=True)
     pattern = re.compile(ds.file_regex)
     urls: list[str] = []
     empty_days: list[str] = []
-    day = start
-    while day <= end:
+    margin = dt.timedelta(days=ds.folder_margin_days)
+    core = (start.when.date(), end.when.date())
+    day, last = core[0] - margin, core[1] + margin
+    while day <= last:
         prefix = ds.key_root + day.strftime(ds.key_template)
         found = [
             o["path"]
@@ -242,7 +302,7 @@ def discover(ds: Dataset, start: dt.date, end: dt.date) -> list[str]:
             for o in batch
             if pattern.match(o["path"].rsplit("/", 1)[-1])
         ]
-        if not found:
+        if not found and core[0] <= day <= core[1]:  # margin folders may not exist yet
             empty_days.append(day.isoformat())
         urls += [ds.http_base + p for p in found]
         day += dt.timedelta(days=1)
@@ -812,12 +872,22 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
     zarr.config.set({"async.concurrency": ds.source_concurrency})
 
     urls = discover(ds, args.start, args.end)
-    log.info("discovered %d files for %s..%s", len(urls), args.start, args.end)
+    log.info("discovered %d candidate files for %s .. %s (±%d day(s) of folders)",
+             len(urls), args.start, args.end, ds.folder_margin_days)
     if not urls:
         raise SystemExit("nothing to index")
     if args.dry_run:
-        for u in urls:
-            print(u)
+        # Valid times are only known from the files themselves.
+        n = 0
+        for i in range(0, len(urls), args.batch_size):
+            batch_urls = urls[i : i + args.batch_size]
+            vds_list = open_files(ds, batch_urls, args.workers)
+            times = np.array([v[dim].values[0] for v in vds_list], dtype="datetime64[ns]")
+            for u, t in zip(batch_urls, times):
+                if in_range(np.array([t]), args.start, args.end)[0]:
+                    print(f"{u}\t{t}")
+                    n += 1
+        log.info("%d file(s) in %s .. %s", n, args.start, args.end)
         return
 
     storage = make_storage(args.repo)
@@ -848,11 +918,23 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
             log.info("skipping %d file(s) recorded as already indexed", len(urls) - len(pending))
         urls = pending
 
-    total_new = total_replaced = 0
+    total_new = total_replaced = in_window = 0
     for i in range(0, len(urls), args.batch_size):
         batch_urls = urls[i : i + args.batch_size]
         vds_list = open_files(ds, batch_urls, args.workers)
         times = np.array([v[dim].values[0] for v in vds_list], dtype="datetime64[ns]")
+
+        # Margin folders hold files outside the requested time range; drop them.
+        inside = in_range(times, args.start, args.end)
+        if not inside.all():
+            log.info("batch %d: ignoring %d file(s) outside %s .. %s",
+                     i // args.batch_size, int((~inside).sum()), args.start, args.end)
+        vds_list = [v for v, k in zip(vds_list, inside) if k]
+        batch_urls = [u for u, k in zip(batch_urls, inside) if k]
+        times = times[inside]
+        in_window += len(vds_list)
+        if not vds_list:
+            continue
 
         # Reconcile against committed state: files whose valid time is already in
         # the store were indexed by an earlier run. Skip them, unless --force,
@@ -944,6 +1026,8 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
         log.info("committed %s: +%d new, %d replaced step(s) (%s .. %s)",
                  snapshot, n_new, n_replaced, times[0], times[-1])
 
+    if urls and not in_window:
+        log.warning("none of the opened files is valid in %s .. %s", args.start, args.end)
     log.info("done: %d new, %d replaced step(s), %d total", total_new, total_replaced, have.size)
     if not args.no_validate:
         validate(storage, ds, expected_steps=have.size, expected_last=have[-1] if have.size else None)
@@ -1240,10 +1324,6 @@ def scan_catalogs(target: CatalogTarget) -> None:
     write_catalogs(target, gridlook, xreds)
 
 
-def parse_date(s: str) -> dt.date:
-    return dt.date.fromisoformat(s)
-
-
 def main() -> None:
     # Destination settings (AWS_*) from .env next to the script; the shell's
     # environment wins over the file.
@@ -1286,8 +1366,11 @@ def main() -> None:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("dataset", choices=sorted(datasets), help=f"dataset preset from {config_path.name}")
     p.add_argument("--repo", help="repository: local directory or s3://bucket/prefix")
-    p.add_argument("--start", type=parse_date, required=True, help="first day (YYYY-MM-DD), by folder date")
-    p.add_argument("--end", type=parse_date, required=True, help="last day, inclusive")
+    p.add_argument("--start", type=parse_time, required=True,
+                   help="first valid time, inclusive: YYYY-MM-DD or YYYY-MM-DDTHH[:MM[:SS]], UTC")
+    p.add_argument("--end", type=parse_time, required=True,
+                   help="last valid time, inclusive (UTC); a date alone means the whole day, "
+                        "up to 00:00 of the next")
     p.add_argument("--batch-size", type=int, default=32, help="files per commit (default 32)")
     p.add_argument("--workers", type=int, default=8, help="parallel file-opening processes (default 8)")
     p.add_argument("--dry-run", action="store_true", help="list the files and exit")
@@ -1300,6 +1383,8 @@ def main() -> None:
     p.add_argument("--key-template"); p.add_argument("--file-regex"); p.add_argument("--concat-dim")
     p.add_argument("--loadable", help="comma-separated variables to materialize")
     p.add_argument("--time-chunk", type=int)
+    p.add_argument("--folder-margin-days", type=int,
+                   help="day folders scanned beyond each end of the range (default 1)")
     p.add_argument("--drop-global-attrs",
                    help="comma-separated global attribute names to drop (wildcards allowed, e.g. 'frc_file_*')")
     p.add_argument("--coord-aliases",
@@ -1334,7 +1419,8 @@ def main() -> None:
     ovg.add_argument("--overview-method", choices=OVERVIEW_METHODS, help="reduction (default mean)")
     args = p.parse_args()
 
-    if args.end < args.start:
+    lo, hi, incl = time_bounds(args.start, args.end)
+    if hi < lo or (hi == lo and not incl):
         p.error("--end is before --start")
     if not args.dry_run and not args.repo:
         p.error("--repo is required unless --dry-run")
@@ -1343,6 +1429,7 @@ def main() -> None:
         "bucket_url": args.bucket_url, "http_base": args.http_base, "key_root": args.key_root,
         "key_template": args.key_template, "file_regex": args.file_regex,
         "concat_dim": args.concat_dim, "time_chunk": args.time_chunk,
+        "folder_margin_days": args.folder_margin_days,
         "drop_global_attrs": tuple(args.drop_global_attrs.split(",")) if args.drop_global_attrs else None,
         "loadable": tuple(args.loadable.split(",")) if args.loadable else None,
         "coord_aliases": None if args.coord_aliases is None else
@@ -1354,6 +1441,8 @@ def main() -> None:
     for k in SOURCE_FIELDS:
         if getattr(ds, k) < (0 if k == "source_read_retries" else 1):
             p.error(f"--{k.replace('_', '-')} must be positive")
+    if ds.folder_margin_days < 0:
+        p.error("--folder-margin-days must be >= 0")
     if ds.concat_dim not in ds.loadable:
         p.error("--loadable must include the concat dimension")
     if ds.rectilinear:

@@ -9,6 +9,9 @@
 #   concat_dim         dimension the files are appended along
 #   loadable           (optional) small variables to materialize; must include concat_dim
 #   time_chunk         (optional, default 4096) chunk length of the concat coordinate
+#   folder_margin_days (optional, default 1) day folders listed beyond each end
+#                      of --start/--end, which select by valid time; needed
+#                      when a folder holds data of neighbouring days
 #   drop_global_attrs  (optional, default [file, history]) list of global
 #                      attribute names that describe a single run/file;
 #                      shell-style wildcards allowed, e.g. frc_file_*
