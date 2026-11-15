@@ -11,6 +11,9 @@ sbx run claude --kit docker.io/sbx/mise:latest
 
 ## Multiscale overviews/pyramids
 
+Implemented for regular-grid datasets: see [Multiscale overviews](#multiscale-overviews).
+Background reading:
+
 * https://github.com/earth-mover/icechunk-multiscales-demo
 * https://github.com/carbonplan/topozarr
 * https://github.com/carbonplan/ndpyramid
@@ -66,7 +69,7 @@ Lists the source files that would be indexed. No repository is needed.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `dataset` | — | Preset name from the config file (`wcofs-fields-nowcast`, `ciofs-fields-nowcast`) |
+| `dataset` | — | Preset name from the config file (`wcofs-fields-nowcast`, `ciofs-fields-nowcast`, `wcofs-regulargrid-nowcast`, `ciofs-regulargrid-nowcast`) |
 | `--config` | `datasets.yml` next to the script | YAML file of dataset presets |
 | `--repo` | — | Local directory, or `s3://bucket/prefix` (settings from `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL`; see [Local S3](#local-s3-versitygw)). Required unless `--dry-run` |
 | `--start`, `--end` | — | Date range, `YYYY-MM-DD`, inclusive |
@@ -80,11 +83,16 @@ Lists the source files that would be indexed. No repository is needed.
 | `--public-base-url` | see [Catalogs](#catalogs) | Browser URL of the repository root, used for gridlook entries |
 | `--xreds-base-url` | see [Catalogs](#catalogs) | `s3://` URL of the repository root as Xreds sees it |
 | `--xreds-endpoint-url` | see [Catalogs](#catalogs) | S3 endpoint written into Xreds entries (`''` for AWS) |
+| `--overviews` / `--no-overviews` | preset | Build [multiscale overviews](#multiscale-overviews) in a new repository (default: when the preset has an `overviews` entry) |
+| `--overview-variables` | preset | Comma-separated variables to build overviews for |
+| `--overview-levels` | 3 | Levels including full resolution (`auto`: halve until a side would drop below 256) |
+| `--overview-method` | `mean` | `mean`, `min`, `max` or `nearest` |
 
 Every field of a dataset preset can also be overridden from the command line:
 `--bucket-url`, `--http-base`, `--key-root`, `--key-template`, `--file-regex`,
 `--concat-dim`, `--loadable`, `--time-chunk`, `--drop-global-attrs`,
-`--coord-aliases` (e.g. `'lat=lat_rho,lon=lon_rho'`; `''` for none). Run
+`--coord-aliases` (e.g. `'lat=lat_rho,lon=lon_rho'`; `''` for none),
+`--rectilinear` (e.g. `'lat=Latitude,lon=Longitude'`; `''` for none). Run
 `./virtualize.py --help` for the full list.
 
 ## Adding a dataset
@@ -104,6 +112,8 @@ or put it in your own file and pass `--config path/to/file.yml`:
 | `time_chunk` | 4096 | Chunk length of the materialized time coordinate |
 | `drop_global_attrs` | `[file, history, rst_file, ..., 'frc_file_[0-9]*']` | Global attributes that describe a single run/file, as a list of names. Wildcards allowed (see below). Default `[file, history]` |
 | `coord_aliases` | `{lat: lat_rho, lon: lon_rho}` | Extra coordinates `{alias: source}` that reuse the source coordinate's references (no data copied), for viewers that only recognise names like `lat`/`lon`. Default none |
+| `rectilinear` | (regulargrid: `{lat: Latitude, lon: Longitude}`) | A regular grid that the files store as 2-D lat/lon arrays. They must be in `loadable`; they are checked to be rectilinear and evenly spaced, then replaced by 1-D `lat`/`lon` coordinates, and their dimensions are renamed `lat`/`lon` (references unchanged). Default none |
+| `overviews` | (regulargrid: `{variables: [zeta, temp, ...], levels: 3, method: mean}`) | Build [multiscale overviews](#multiscale-overviews) by default. Needs a regular grid. Default none |
 
 The WCOFS entry in full:
 
@@ -254,8 +264,8 @@ public too:
 
 | File | For | Public URL (local S3) |
 |---|---|---|
-| `_catalogs/gridlook-catalog.json` | [gridlook catalog](https://github.com/d70-t/gridlook/blob/main/docs/catalogs.md) | `http://localhost:7070/icechunk/_catalogs/gridlook-catalog.json` |
-| `_catalogs/xreds-datasets.yml` | Xreds `DATASETS_MAPPING_FILE` | `s3://icechunk/_catalogs/xreds-datasets.yml` |
+| `_catalogs/gridlook.json` | [gridlook catalog](https://github.com/d70-t/gridlook/blob/main/docs/catalogs.md) | `http://localhost:7070/icechunk/_catalogs/gridlook.json` |
+| `_catalogs/xreds.yml` | Xreds `DATASETS_MAPPING_FILE` | `s3://icechunk/_catalogs/xreds.yml` |
 
 **After every build** (not `--dry-run`, not `--no-catalog`), the entry for
 the repository just built is created or replaced in both files. Other entries,
@@ -288,7 +298,7 @@ The URLs written into entries default to the compose setup:
 The gridlook service mounts `./repos/_catalogs` and serves its catalog as the
 default at `http://localhost:3000/`; it is re-read on every page load. It can
 also be opened from S3 with
-`http://localhost:3000/#http://localhost:7070/icechunk/_catalogs/gridlook-catalog.json`.
+`http://localhost:3000/#http://localhost:7070/icechunk/_catalogs/gridlook.json`.
 
 ## Serving with Xreds
 
@@ -297,9 +307,9 @@ also be opened from S3 with
 from a pinned commit plus `patch/xreds/virtual-icechunk-s3-http.patch`. The image
 follows upstream's `Dockerfile.viewer`: the bundled React viewer is served at
 `http://localhost:8090/`, the API at `/datasets/...` and its docs at `/docs`. It reads its
-catalog from `./repos/_catalogs/xreds-datasets.yml`, mounted into the container
+catalog from `./repos/_catalogs/xreds.yml`, mounted into the container
 (Xreds can also read it from S3 or HTTP: any fsspec URL, e.g.
-`s3://icechunk/_catalogs/xreds-datasets.yml`).
+`s3://icechunk/_catalogs/xreds.yml`).
 
 Stock Xreds can't open these repositories. Its `virtual-icechunk` loader
 gives no way to set an S3 endpoint, and it only authorizes S3 chunk
@@ -332,6 +342,79 @@ judged from the repository's own variables:
 
 The NOAA `vdatum` extension, which needs a separate vdatum dataset, is not
 configured.
+
+## Multiscale overviews
+
+A web map that shows a whole model domain would otherwise fetch every
+full-resolution chunk. With overviews, a repository also holds coarser copies
+(2x, 4x, ... fewer cells per side) of selected variables, and a map loads the
+level that matches the zoom. The store becomes a *hybrid*: full resolution stays
+virtual (references into the provider's files), only the coarser levels are real
+data. The layout follows the GeoZarr
+[multiscales](https://github.com/zarr-conventions/multiscales),
+[proj](https://github.com/zarr-conventions/proj) and
+[spatial](https://github.com/zarr-conventions/spatial) conventions, with
+metadata and chunking from [topozarr](https://github.com/carbonplan/topozarr):
+
+```
+wcofs-rg.icechunk/
+  /                 the virtual dataset, unchanged (gridlook, Xreds, xarray)
+  /multiscale/      multiscales + proj: + spatial: attributes
+     0/             the overview variables again, as the same references
+     1/ .. N-1/     materialized levels, each 2x2-averaged from the one before
+```
+
+```bash
+./virtualize.py wcofs-regulargrid-nowcast --repo s3://icechunk/wcofs-rg.icechunk \
+    --start 2026-11-01 --end 2026-11-07
+```
+
+The `*-regulargrid-nowcast` presets build overviews by default
+(`--no-overviews` to skip). Each batch writes its references and its overview
+steps in the same commit, so an interrupted build resumes cleanly and appends
+keep every level in step with the root. Level k is computed in memory from
+level k-1, so each source value is read once. `--force` rewrites the overview
+steps of re-ingested files too. Overview settings are fixed when the repository
+is created; a repository built without overviews can't gain them later (build a
+new one).
+
+**Only regular grids.** Each level is described by one affine transform, so the
+grid must be a regular lat/lon grid. The ROMS `fields` presets are curvilinear
+and can't have overviews; NOAA's `regulargrid` files carry the same runs
+interpolated to a regular grid (WCOFS 0.04°, CIOFS 0.005°), at fixed depths,
+with currents rotated to east/north. `rectilinear` turns their 2-D
+`Latitude`/`Longitude` into 1-D `lat`/`lon`.
+
+**Cost.** Overview levels are real data: per time step about a third of each
+variable's full size. For WCOFS a 3-D variable is ~128 MB per step, so ~43 MB
+of overviews before compression. Building them reads those variables in full
+from NOAA, which dominates build time. Choose `overviews.variables` (or
+`--overview-variables`) accordingly. For scale: one week of WCOFS regulargrid
+(56 steps, the default five variables, 3 levels) took 1 h 53 min on a ~5 MB/s
+link (~2 min per step) and produced a 2.7 GB repository (~48 MB per step after
+compression).
+
+**Reading.** `xr.open_datatree(store, group="multiscale", engine="zarr",
+consolidated=False)` gives one child per level. In the browser, use the maps
+viewer below. Of the tools in this setup, only it uses the levels: gridlook and
+Xreds keep showing the full-resolution root.
+
+### Viewing overviews on a map
+
+`docker compose up -d` also builds and starts a small MapLibre page
+(`./viewer`) on `http://localhost:8080`, using
+[zarr-layer](https://github.com/carbonplan/zarr-layer) (multiscales-aware) and
+[icechunk-js](https://github.com/EarthyScience/icechunk-js). It lists the
+repositories that the gridlook catalog tags `overviews`, or opens one directly
+with `http://localhost:8080/?repo=http://localhost:7070/icechunk/<name>.icechunk`.
+Coarse levels come from the local S3 server; full resolution is read through
+the virtual references straight from NOAA's bucket (which allows browser
+reads). Controls: repository, variable, time, depth, colour range (defaults to
+the 2nd–98th percentile of the coarsest level); click the map for a value. The
+basemap is OpenStreetMap's tile server, so it needs internet access.
+
+Other clients that read GeoZarr multiscales are OpenLayers' `GeoZarr` source and
+GDAL ≥ 3.13 (QGIS), but those read plain Zarr, not Icechunk.
 
 ## Notes
 

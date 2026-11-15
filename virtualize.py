@@ -10,6 +10,7 @@
 #     "obspec-utils==0.9.0",
 #     "pyyaml==6.0.3",
 #     "python-dotenv==1.1.1",
+#     "topozarr==0.3.0",
 # ]
 # ///
 """Create or update a virtual Icechunk store over gridded NetCDF4/HDF5 files in
@@ -36,6 +37,10 @@ Examples
     # Same, but into the local versitygw S3 container (docker compose up -d)
     ./virtualize.py wcofs-fields-nowcast --repo s3://icechunk/wcofs.icechunk \\
         --start 2026-10-01 --end 2026-10-31
+
+    # Regular-grid files, with multiscale overviews for web maps (preset default)
+    ./virtualize.py wcofs-regulargrid-nowcast --repo s3://icechunk/wcofs-rg.icechunk \\
+        --start 2026-11-01 --end 2026-11-07
 
     # Rebuild the gridlook/Xreds catalogs from every repository in a root, then exit
     ./virtualize.py --scan-catalogs s3://icechunk
@@ -74,9 +79,12 @@ import importlib.metadata as md
 import json
 import logging
 import math
+import multiprocessing
 import os
 import re
 import sys
+import time
+import warnings
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -122,6 +130,17 @@ class Dataset:
     # recognise coordinates named lat/lon (gridlook) otherwise pick an arbitrary
     # one of several staggered grids. No data is copied.
     coord_aliases: dict[str, str] = dataclasses.field(default_factory=dict)
+    # A regular lat/lon grid that the files store as 2-D coordinate arrays (NOAA
+    # OFS "regulargrid" files), as {lat: <2-D name>, lon: <2-D name>}. The two
+    # arrays (which must be in `loadable`) are checked to be rectilinear and
+    # evenly spaced, then replaced by 1-D `lat`/`lon` coordinates, and their
+    # dimensions are renamed to lat/lon (metadata only; references unchanged).
+    rectilinear: dict[str, str] = dataclasses.field(default_factory=dict)
+    # Multiscale overviews (see "Multiscale overviews" below), as
+    # {variables: [...], levels: 3 | auto, method: mean|min|max|nearest}.
+    # Present = built by default; --overviews/--no-overviews override.
+    # Needs `rectilinear` (or 1-D lat/lon coordinates).
+    overviews: dict | None = None
 
     @property
     def url_prefix(self) -> str:
@@ -142,10 +161,23 @@ def load_datasets(path: Path = DATASETS_FILE) -> dict[str, Dataset]:
                 if not isinstance(fields[key], list):
                     raise SystemExit(f"{path}: dataset {name!r}: {key} must be a list")
                 fields[key] = tuple(str(v) for v in fields[key])
-        if "coord_aliases" in fields:
-            if not isinstance(fields["coord_aliases"], dict):
-                raise SystemExit(f"{path}: dataset {name!r}: coord_aliases must be a mapping")
-            fields["coord_aliases"] = {str(k): str(v) for k, v in fields["coord_aliases"].items()}
+        for key in ("coord_aliases", "rectilinear"):
+            if key in fields:
+                if not isinstance(fields[key], dict):
+                    raise SystemExit(f"{path}: dataset {name!r}: {key} must be a mapping")
+                fields[key] = {str(k): str(v) for k, v in fields[key].items()}
+        if fields.get("rectilinear") and set(fields["rectilinear"]) != {"lat", "lon"}:
+            raise SystemExit(f"{path}: dataset {name!r}: rectilinear needs exactly the keys lat and lon")
+        if "overviews" in fields:
+            ov = fields["overviews"]
+            if ov is None:
+                ov = {}
+            if not isinstance(ov, dict) or set(ov) - {"variables", "levels", "method"}:
+                raise SystemExit(f"{path}: dataset {name!r}: overviews must be a mapping with "
+                                 "variables, levels and/or method")
+            if "variables" in ov and not isinstance(ov["variables"], list):
+                raise SystemExit(f"{path}: dataset {name!r}: overviews.variables must be a list")
+            fields["overviews"] = ov
         try:
             out[name] = Dataset(**fields)
         except TypeError as e:  # unknown or missing field
@@ -214,7 +246,10 @@ def open_files(ds: Dataset, urls: list[str], workers: int) -> list[xr.Dataset]:
     args = [(u, ds.http_base, ds.loadable) for u in urls]
     if workers <= 1 or len(urls) == 1:
         return [_open_one(a) for a in args]
-    with ProcessPoolExecutor(max_workers=workers) as pool:
+    # forkserver, not fork: by now this process runs threads (zarr's I/O loop, the
+    # obstore/icechunk runtimes), and a forked child can inherit their locks held
+    # and hang on its first request. (Python 3.14 makes forkserver the default.)
+    with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("forkserver")) as pool:
         return list(pool.map(_open_one, args))
 
 
@@ -260,6 +295,44 @@ def _decode_fill(value, dtype: np.dtype):
     return value
 
 
+def to_rectilinear(vds: xr.Dataset, spec: dict[str, str]) -> xr.Dataset:
+    """Replace 2-D lat/lon arrays that describe a regular grid by 1-D `lat`/`lon`
+    dimension coordinates. Only dimension names change on the virtual arrays."""
+    lat_name, lon_name = spec["lat"], spec["lon"]
+    for n in (lat_name, lon_name):
+        if n not in vds.variables:
+            raise SystemExit(f"rectilinear: {n!r} not in the source files")
+    lat2, lon2 = vds[lat_name], vds[lon_name]
+    if lat2.ndim != 2 or lat2.dims != lon2.dims:
+        raise SystemExit(f"rectilinear: {lat_name} and {lon_name} must be 2-D over the same dimensions")
+    ydim, xdim = lat2.dims
+    try:
+        lat_v, lon_v = np.asarray(lat2.values, dtype="f8"), np.asarray(lon2.values, dtype="f8")
+    except (TypeError, NotImplementedError):  # a virtual (unloaded) array has no values
+        raise SystemExit(f"rectilinear: {lat_name} and {lon_name} must be in loadable")
+    # Rows of constant latitude, columns of constant longitude, even spacing.
+    if np.ptp(lat_v, axis=1).max() > 1e-9 or np.ptp(lon_v, axis=0).max() > 1e-9:
+        raise SystemExit(f"rectilinear: {lat_name}/{lon_name} do not form a rectilinear grid "
+                         "(curvilinear grids cannot be described this way)")
+    lat, lon = lat_v[:, 0], lon_v[0, :]
+    for name, c in (("lat", lat), ("lon", lon)):
+        d = np.diff(c)
+        if c.size < 2 or not np.allclose(d, d[0], rtol=1e-6, atol=0):
+            raise SystemExit(f"rectilinear: {name} is not evenly spaced")
+    for dim_name in ("lat", "lon"):
+        if dim_name in vds.variables or dim_name in vds.dims:
+            raise SystemExit(f"rectilinear: {dim_name!r} already exists in the source files")
+    vds = vds.drop_vars([lat_name, lon_name]).rename_dims({ydim: "lat", xdim: "lon"})
+    log.info("rectilinear: %s x %s grid, %.6g x %.6g degrees (%s, %s -> lat, lon)",
+             lat.size, lon.size, lat[1] - lat[0], lon[1] - lon[0], ydim, xdim)
+    return vds.assign_coords(
+        lat=("lat", lat, {"standard_name": "latitude", "long_name": "latitude",
+                          "units": "degrees_north", "axis": "Y"}),
+        lon=("lon", lon, {"standard_name": "longitude", "long_name": "longitude",
+                          "units": "degrees_east", "axis": "X"}),
+    )
+
+
 def repair_metadata(vds: xr.Dataset, dim: str, drop_global: tuple[str, ...],
                     coord_aliases: dict[str, str] | None = None) -> xr.Dataset:
     changes: list[str] = []
@@ -292,6 +365,11 @@ def repair_metadata(vds: xr.Dataset, dim: str, drop_global: tuple[str, ...],
                 del attrs[key]
                 changes.append(f"{scope}: dropped non-finite attribute {key!r}")
     coord = vds[dim]
+    # A decoded time coordinate gets CF's time markers, so catalogs and CF tools
+    # (cf_xarray in Xreds) find it; the regulargrid files' time has neither.
+    if coord.dtype.kind == "M" and "standard_name" not in coord.attrs:
+        coord.attrs["standard_name"] = "time"
+        changes.append(f"{dim}: added standard_name='time'")
     if coord.attrs.get("standard_name") == "time" and "axis" not in coord.attrs:
         coord.attrs["axis"] = "T"
         changes.append(f"{dim}: added axis='T'")
@@ -390,6 +468,8 @@ def combine(vds_list: list[xr.Dataset], ds: Dataset) -> xr.Dataset:
         vds_list, dim=ds.concat_dim, data_vars="minimal", coords="minimal",
         compat="override", combine_attrs="drop_conflicts",
     )
+    if ds.rectilinear:
+        vds = to_rectilinear(vds, ds.rectilinear)
     return repair_metadata(vds, ds.concat_dim, ds.drop_global_attrs, ds.coord_aliases)
 
 
@@ -406,6 +486,271 @@ def replace_steps(session: ic.Session, vds: xr.Dataset, dim: str, start: int) ->
     part.vz.to_icechunk(session.store, region={dim: slice(start, start + part.sizes[dim])})
     if coordinates is not None:  # the writer resets it to the subset's coordinates
         group.update_attributes({"coordinates": coordinates})
+
+
+# --------------------------------------------------------------------------- #
+# Multiscale overviews (optional). A GeoZarr pyramid in the group "multiscale":
+#   multiscale/        multiscales + proj: + spatial: attributes (via topozarr)
+#   multiscale/0/      the overview variables again, as virtual references
+#   multiscale/1..N/   materialized copies, each 2x coarser than the one before
+# The root dataset is left exactly as without overviews, so readers that don't
+# know about multiscales (gridlook, Xreds, plain xarray) see no difference.
+# Level k is computed in memory from level k-1, so the source data is read once.
+# --------------------------------------------------------------------------- #
+OVERVIEW_GROUP = "multiscale"
+OVERVIEW_METHODS = ("mean", "min", "max", "nearest")
+OVERVIEW_BUDGET = 512 * 2**20  # bytes of one variable's level-0 data held at once
+
+
+@dataclass(frozen=True)
+class Overviews:
+    variables: tuple[str, ...]  # empty: every variable over (time, ..., lat, lon)
+    levels: int | str = 3  # levels including level 0, or "auto" (topozarr's min_dim rule)
+    method: str = "mean"
+
+
+def parse_levels(value) -> int | str:
+    if value == "auto":
+        return "auto"
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        raise SystemExit(f"overviews: levels must be an integer >= 2 or 'auto', not {value!r}")
+    if n < 2:
+        raise SystemExit("overviews: levels must be at least 2 (level 0 plus one overview)")
+    return n
+
+
+def stored_overviews(repo: ic.Repository, dim: str) -> Overviews | None:
+    """The overview settings a repository was built with, or None."""
+    store = repo.readonly_session("main").store
+    try:
+        group = zarr.open_group(store, path=OVERVIEW_GROUP, mode="r")
+    except (zarr.errors.GroupNotFoundError, FileNotFoundError, KeyError):
+        return None
+    layout = group.attrs.get("multiscales", {}).get("layout", [])
+    method = next((e.get("resampling_method") for e in layout[1:] if e.get("resampling_method")), "mean")
+    level0 = zarr.open_group(store, path=f"{OVERVIEW_GROUP}/0", mode="r")
+    variables = tuple(sorted(
+        n for n, a in level0.arrays()
+        if {dim, "lat", "lon"} <= set(a.metadata.dimension_names or ())))
+    return Overviews(variables, len(layout), method)
+
+
+def resolve_overviews(args: argparse.Namespace, ds: Dataset, has_data: bool,
+                      stored: Overviews | None) -> Overviews | None:
+    """Decide whether this build maintains overviews. An existing repository
+    decides by itself (its overviews must stay in step with the root); a new one
+    follows the command line, else the preset."""
+    requested = args.overviews
+    if has_data:
+        if stored is not None:
+            if requested is False:
+                raise SystemExit("this repository has overviews, which must be updated with every "
+                                 "build; drop --no-overviews")
+            if args.overview_variables or args.overview_levels or args.overview_method:
+                log.warning("overviews: settings are fixed when a repository is created; "
+                            "keeping %s", stored)
+            return stored
+        if requested:
+            raise SystemExit("this repository was built without overviews; build a new "
+                             "repository to have them")
+        if ds.overviews is not None:
+            log.warning("overviews: the preset asks for overviews, but this repository was built "
+                        "without them; continuing without")
+        return None
+    if not (requested if requested is not None else ds.overviews is not None):
+        return None
+    cfg = dict(ds.overviews or {})
+    if args.overview_variables:
+        cfg["variables"] = args.overview_variables.split(",")
+    if args.overview_levels:
+        cfg["levels"] = args.overview_levels
+    if args.overview_method:
+        cfg["method"] = args.overview_method
+    method = str(cfg.get("method", "mean"))
+    if method not in OVERVIEW_METHODS:
+        raise SystemExit(f"overviews: method must be one of {', '.join(OVERVIEW_METHODS)}")
+    if not ds.rectilinear:
+        raise SystemExit("overviews need a regular lat/lon grid (see `rectilinear`); this "
+                         "dataset's grid is not declared regular. Curvilinear grids (e.g. the ROMS "
+                         "`fields` files) cannot have overviews: use the `regulargrid` presets")
+    return Overviews(tuple(str(v) for v in cfg.get("variables") or ()),
+                     parse_levels(cfg.get("levels", 3)), method)
+
+
+def overview_variables(vds: xr.Dataset, ov: Overviews, dim: str) -> list[str]:
+    spatial = {dim, "lat", "lon"}
+    eligible = [n for n, v in vds.data_vars.items() if spatial <= set(v.dims)]
+    if not ov.variables:
+        return eligible
+    bad = [v for v in ov.variables if v not in eligible]
+    if bad:
+        raise SystemExit(f"overviews: {', '.join(bad)} not in the files or not over "
+                         f"({dim}, lat, lon); candidates: {', '.join(eligible)}")
+    return list(ov.variables)
+
+
+def reduce2(a: np.ndarray, method: str) -> np.ndarray:
+    """2x2 block reduction over the last two axes, skipping NaN; trailing odd rows
+    and columns are dropped (xarray coarsen boundary="trim", as topozarr does)."""
+    ny, nx = a.shape[-2] // 2, a.shape[-1] // 2
+    a = a[..., : 2 * ny, : 2 * nx]
+    if method == "nearest":  # top-left cell of each window
+        return np.ascontiguousarray(a[..., ::2, ::2])
+    blocks = a.reshape(*a.shape[:-2], ny, 2, nx, 2)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN windows (land) stay NaN
+        if method == "mean":
+            out = np.nanmean(blocks, axis=(-3, -1), dtype="f8")
+        else:
+            out = (np.nanmin if method == "min" else np.nanmax)(blocks, axis=(-3, -1))
+    return out.astype(a.dtype, copy=False)
+
+
+def _level_group_attrs(store, level: int) -> dict:
+    from topozarr.metadata import level_group_attrs
+    root = zarr.open_group(store, path=OVERVIEW_GROUP, mode="r")
+    return level_group_attrs(dict(root.attrs), level)
+
+
+def _overview_plan(lvl0: xr.Dataset, variables: list[str], ov: Overviews, dim: str):
+    """topozarr's pyramid plan: GeoZarr metadata, level coordinates and chunking.
+    Built from a one-step template; topozarr reads no data for it."""
+    import xproj  # noqa: F401  (.proj accessor)
+    from topozarr import create_pyramid
+    template = lvl0[variables].isel({dim: slice(0, 1)})
+    template = template.drop_vars([c for c in template.coords if template[c].ndim > 1])
+    template = template.proj.assign_crs(spatial_ref="EPSG:4326")
+    return create_pyramid(template, levels=ov.levels, x_dim="lon", y_dim="lat", method=ov.method)
+
+
+def _first_write_encoding(plan, level: int, lvl0: xr.Dataset, variables: list[str],
+                          dim: str, time_chunk: int) -> dict:
+    """topozarr's chunks/shards for a level, with one time step per chunk and shard
+    (so appends never rewrite a shard), and level 0's dtype and fill value."""
+    plan_enc = plan.encoding[f"/{level}"]
+    enc: dict = {}
+    for v in variables:
+        e = {k: val for k, val in plan_enc.get(v, {}).items() if k in ("chunks", "shards", "compressors")}
+        dims = lvl0[v].dims
+        for key in ("chunks", "shards"):
+            if e.get(key) is not None:
+                e[key] = tuple(1 if d == dim else n for d, n in zip(dims, e[key]))
+        src = lvl0[v].encoding
+        e["dtype"] = src.get("dtype", lvl0[v].dtype)
+        if src.get("_FillValue") is not None:
+            e["_FillValue"] = src["_FillValue"]
+            e["fill_value"] = src["_FillValue"]  # zarr metadata too, for non-CF readers
+        if src.get("missing_value") is not None:
+            e["missing_value"] = src["missing_value"]
+        enc[v] = e
+    t = lvl0[dim].encoding
+    enc[dim] = {k: t[k] for k in ("units", "calendar", "dtype") if k in t} | {"chunks": (time_chunk,)}
+    return enc
+
+
+def update_overviews(session: ic.Session, vds: xr.Dataset, ov: Overviews, dim: str,
+                     start: int, *, create: bool = False, replace: bool = False,
+                     time_chunk: int = 4096) -> None:
+    """Write the time steps of `vds` (positions start.. in the root arrays) to the
+    overview pyramid: references to multiscale/0, coarsened data to 1..N.
+    create: first write of the repository; replace: rewrite existing steps (--force)."""
+    t_start = time.time()
+    store = session.store
+    variables = overview_variables(vds, ov, dim)
+    n = vds.sizes[dim]
+    static = [name for name, v in vds.variables.items() if dim not in v.dims]
+
+    # Level 0: the same references as the root arrays.
+    part = vds[variables]
+    part.attrs = {}
+    if create:
+        part.vz.to_icechunk(store, group=f"{OVERVIEW_GROUP}/0")
+    elif replace:
+        part.drop_vars([s for s in static if s in part.variables] + [dim]).vz.to_icechunk(
+            store, group=f"{OVERVIEW_GROUP}/0", region={dim: slice(start, start + n)})
+    else:
+        part.drop_vars([s for s in static if s in part.variables]).vz.to_icechunk(
+            store, group=f"{OVERVIEW_GROUP}/0", append_dim=dim)
+
+    # Level 0 as a lazy, decoded dataset (reads the source through the session).
+    lvl0 = xr.open_zarr(store, group=f"{OVERVIEW_GROUP}/0", consolidated=False, chunks=None)
+    plan = None
+    if create:
+        plan = _overview_plan(lvl0, variables, ov, dim)
+        zarr.open_group(store, path=OVERVIEW_GROUP, mode="r+").attrs.update(plan.attrs)
+    layout = zarr.open_group(store, path=OVERVIEW_GROUP, mode="r").attrs["multiscales"]["layout"]
+    levels = len(layout)
+    shapes = [tuple(e["spatial:shape"]) for e in layout]
+    zarr.open_group(store, path=f"{OVERVIEW_GROUP}/0", mode="r+").attrs.update(_level_group_attrs(store, 0))
+
+    # Steps per pass: as many as fit OVERVIEW_BUDGET for the largest variable.
+    step_bytes = max(math.prod(s for d, s in lvl0[v].sizes.items() if d != dim) * lvl0[v].dtype.itemsize
+                     for v in variables)
+    per_pass = max(1, OVERVIEW_BUDGET // step_bytes)
+    exists = [not create] * levels
+    other_coords = {c: lvl0[c] for c in lvl0.coords if c not in (dim, "lat", "lon") and dim not in lvl0[c].dims}
+    for p0 in range(start, start + n, per_pass):
+        p1 = min(start + n, p0 + per_pass)
+        data: list[dict[str, np.ndarray]] = [{} for _ in range(levels)]
+        for v in variables:
+            a = lvl0[v].isel({dim: slice(p0, p1)}).values  # the only source read
+            for k in range(1, levels):
+                a = reduce2(a, ov.method)
+                if a.shape[-2:] != shapes[k]:
+                    raise SystemExit(f"overviews: level {k} of {v} is {a.shape[-2:]}, "
+                                     f"metadata says {shapes[k]}")
+                data[k][v] = a
+            del a
+        times = lvl0[dim].isel({dim: slice(p0, p1)})
+        for k in range(1, levels):
+            group = f"{OVERVIEW_GROUP}/{k}"
+            out = xr.Dataset(
+                {v: (lvl0[v].dims, data[k][v], dict(lvl0[v].attrs)) for v in variables},
+                coords={dim: times.variable})
+            if not exists[k]:
+                tmpl = plan.level_templates[k]
+                out = out.assign_coords({c: tmpl[c].variable for c in ("lat", "lon")} | other_coords)
+                out.to_zarr(store, group=group, mode="w-", zarr_format=3, consolidated=False,
+                            encoding=_first_write_encoding(plan, k, lvl0, variables, dim, time_chunk))
+                exists[k] = True
+            elif replace:
+                out.drop_vars(dim).to_zarr(store, group=group, region={dim: slice(p0, p1)},
+                                           zarr_format=3, consolidated=False)
+            else:
+                out.to_zarr(store, group=group, append_dim=dim, zarr_format=3, consolidated=False)
+            # to_zarr replaces a group's attributes; restore the level's proj:/spatial:.
+            zarr.open_group(store, path=group, mode="r+").attrs.update(_level_group_attrs(store, k))
+        del data
+        log.info("overviews: %s steps %d..%d of %s -> levels 1..%d",
+                 "rewrote" if replace else "wrote", p0, p1 - 1, ",".join(variables), levels - 1)
+    log.info("overviews: %d step(s) in %.0fs", n, time.time() - t_start)
+
+
+def validate_overviews(store, dim: str, root_times: np.ndarray) -> None:
+    """Every level holds the root's time steps at its declared shape, and the last
+    step of each level is the reduction of the level below it."""
+    root = zarr.open_group(store, path=OVERVIEW_GROUP, mode="r")
+    layout = root.attrs["multiscales"]["layout"]
+    method = next((e.get("resampling_method") for e in layout[1:] if e.get("resampling_method")), "mean")
+    levels = [xr.open_zarr(store, group=f"{OVERVIEW_GROUP}/{e['asset']}", consolidated=False, chunks=None)
+              for e in layout]
+    for k, (entry, lv) in enumerate(zip(layout, levels)):
+        assert (lv[dim].values == root_times).all(), f"overview level {k}: time steps differ from the root"
+        assert (lv.sizes["lat"], lv.sizes["lon"]) == tuple(entry["spatial:shape"]), \
+            f"overview level {k}: shape differs from its metadata"
+    # Smallest variable per step keeps the read-back cheap.
+    var = min(levels[1].data_vars, key=lambda v: math.prod(levels[1][v].shape[1:]))
+    sel = {d: 0 for d in levels[0][var].dims if d not in (dim, "lat", "lon")} | {dim: -1}
+    prev = levels[0][var].isel(sel).values
+    for k in range(1, len(levels)):
+        got = levels[k][var].isel(sel).values
+        assert np.allclose(reduce2(prev, method), got, equal_nan=True, rtol=1e-5, atol=1e-6), \
+            f"overview level {k} of {var} is not the {method} of level {k - 1}"
+        prev = got
+    log.info("validated overviews: %d levels (%s), %s at the last step matches level by level",
+             len(levels), " / ".join(f"{lv.sizes['lat']}x{lv.sizes['lon']}" for lv in levels), var)
 
 
 # --------------------------------------------------------------------------- #
@@ -439,6 +784,11 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
         log.info("store already holds %d steps, %s .. %s", have.size, have[0], have[-1])
     else:
         have = np.array([], dtype="datetime64[ns]")
+    ov = resolve_overviews(args, ds, committed is not None,
+                           stored_overviews(repo, dim) if committed is not None else None)
+    if ov:
+        log.info("overviews: %s levels (%s), variables: %s", ov.levels, ov.method,
+                 ", ".join(ov.variables) or "all over (time, lat, lon)")
 
     if not args.force:
         already = indexed_files(repo, ds)
@@ -497,6 +847,8 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
             for run in np.split(np.arange(idx.size), np.flatnonzero(np.diff(idx) != 1) + 1):
                 part = combine([vds_list[pos[k]] for k in run], ds)
                 replace_steps(session, part, dim, start=int(idx[run[0]]))
+                if ov:
+                    update_overviews(session, part, ov, dim, int(idx[run[0]]), replace=True)
             log.info("batch %d: replacing %d already-indexed step(s)", i // args.batch_size, int(replace.sum()))
         if new.any():
             vds = combine([v for v, n in zip(vds_list, new) if n], ds)
@@ -509,11 +861,15 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
                 vds[dim].encoding["chunks"] = (ds.time_chunk,)
                 vds[dim].encoding.pop("preferred_chunks", None)
                 vds.vz.to_icechunk(session.store)
+                if ov:
+                    update_overviews(session, vds, ov, dim, 0, create=True, time_chunk=ds.time_chunk)
             else:
                 static = [n for n, v in vds.variables.items() if dim not in v.dims]
                 appended = vds.drop_vars(static)
                 appended.attrs = {}  # appending would otherwise overwrite the global attrs
                 appended.vz.to_icechunk(session.store, append_dim=dim)
+                if ov:
+                    update_overviews(session, vds, ov, dim, int(have.size), time_chunk=ds.time_chunk)
         n_new, n_replaced = int(new.sum()), int(replace.sum())
         verb = "index" if not n_replaced else "re-index" if not n_new else "index/re-index"
         snapshot = session.commit(
@@ -524,6 +880,7 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
                 "replaced": [u.removeprefix(ds.url_prefix) for u, r in zip(batch_urls, replace) if r],
                 "first_time": str(times[0]),
                 "last_time": str(times[-1]),
+                "overviews": ov.levels if ov else None,
                 "versions": versions(),
             },
         )  # a committed session is read-only; the next batch opens a fresh one
@@ -562,10 +919,12 @@ def validate(storage: ic.Storage, ds: Dataset, expected_steps: int, expected_las
         t.size, t[0], t[-1], var, tuple(sample.shape), sample.dtype,
         int(np.isfinite(sample.values).sum()), sample.size,
     )
+    if stored_overviews(repo, ds.concat_dim) is not None:
+        validate_overviews(store, ds.concat_dim, t)
 
 
 # --------------------------------------------------------------------------- #
-# Catalogs: gridlook-catalog.json and xreds-datasets.yml in _catalogs/ under the
+# Catalogs: gridlook.json and xreds.yml in _catalogs/ under the
 # repository root (the directory/prefix holding the *.icechunk repositories). Entries are built
 # from each repository's own metadata, so no preset is needed to describe one.
 # --------------------------------------------------------------------------- #
@@ -696,8 +1055,13 @@ def describe_repo(storage: ic.Storage) -> dict | None:
             if t.size:
                 steps, t0, t1 = t.size, str(t[0])[:16], str(t[-1])[:16]
             break
+    try:
+        layout = group[OVERVIEW_GROUP].attrs.get("multiscales", {}).get("layout", [])
+    except KeyError:
+        layout = []
     return {"attrs": attrs, "prefix": attrs.get("virtualized_source") or (prefixes[0] if prefixes else None),
-            "steps": steps, "first": t0, "last": t1, "variables": variables, "dims": dims}
+            "steps": steps, "first": t0, "last": t1, "variables": variables, "dims": dims,
+            "overview_levels": len(layout)}
 
 
 # What Xreds' "roms" extension reads: it rotates u/v (on the u/v grids) onto the
@@ -734,6 +1098,9 @@ def catalog_entries(target: CatalogTarget, name: str, info: dict) -> tuple[dict,
                 "tags": {"repository": dataset_id, "format": "virtual-icechunk"}}
     if info["prefix"]:
         gridlook["tags"]["source"] = info["prefix"].split("/")[2]  # host
+    if info.get("overview_levels"):
+        # gridlook shows only the root; the maps viewer lists entries with this tag.
+        gridlook["tags"]["overviews"] = f"{OVERVIEW_GROUP} ({info['overview_levels']} levels)"
 
     storage_options: dict = {}
     if target.xreds_endpoint:
@@ -882,7 +1249,21 @@ def main() -> None:
                    help="comma-separated global attribute names to drop (wildcards allowed, e.g. 'frc_file_*')")
     p.add_argument("--coord-aliases",
                    help="comma-separated alias=source coordinate aliases, e.g. 'lat=lat_rho,lon=lon_rho' ('' for none)")
+    p.add_argument("--rectilinear",
+                   help="regular grid given as 2-D arrays, 'lat=NAME,lon=NAME' ('' for none)")
     p.add_argument("--no-catalog", action="store_true", help="do not update the catalogs after the build")
+    ovg = p.add_argument_group(
+        "multiscale overviews",
+        "Coarsened copies of selected variables in the group 'multiscale' (GeoZarr multiscales), "
+        "for web maps. Needs a regular lat/lon grid. Fixed when a repository is created; later "
+        "builds keep them up to date.")
+    ovg.add_argument("--overviews", action=argparse.BooleanOptionalAction, default=None,
+                     help="build overviews in a new repository (default: if the preset has an "
+                          "`overviews` entry)")
+    ovg.add_argument("--overview-variables", metavar="A,B", help="variables to build overviews for")
+    ovg.add_argument("--overview-levels", metavar="N|auto",
+                     help="number of levels including the full-resolution level 0 (default 3)")
+    ovg.add_argument("--overview-method", choices=OVERVIEW_METHODS, help="reduction (default mean)")
     args = p.parse_args()
 
     if args.end < args.start:
@@ -898,10 +1279,22 @@ def main() -> None:
         "loadable": tuple(args.loadable.split(",")) if args.loadable else None,
         "coord_aliases": None if args.coord_aliases is None else
             dict(pair.split("=", 1) for pair in args.coord_aliases.split(",") if pair),
+        "rectilinear": None if args.rectilinear is None else
+            dict(pair.split("=", 1) for pair in args.rectilinear.split(",") if pair),
     }.items() if v is not None}
     ds = dataclasses.replace(datasets[args.dataset], **overrides)
     if ds.concat_dim not in ds.loadable:
         p.error("--loadable must include the concat dimension")
+    if ds.rectilinear:
+        if set(ds.rectilinear) != {"lat", "lon"}:
+            p.error("--rectilinear needs exactly lat=NAME,lon=NAME")
+        if not set(ds.rectilinear.values()) <= set(ds.loadable):
+            p.error("the rectilinear lat/lon arrays must be in --loadable")
+    if args.overview_levels:
+        parse_levels(args.overview_levels)
+    if args.overviews and not ds.rectilinear:
+        p.error("--overviews needs a regular lat/lon grid (`rectilinear`); this dataset's grid is "
+                "curvilinear or undeclared. Use a *-regulargrid-* preset")
     if not (ds.http_base.endswith("/") and ds.key_root.endswith("/")):
         p.error("http_base and key_root must end in '/'")
     log.info("config: %s", json.dumps(dataclasses.asdict(ds)))

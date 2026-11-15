@@ -3,3 +3,5 @@ __pycache__
 HANDOFF.md
 repos
 .env
+viewer/node_modules
+viewer/dist

@@ -74,3 +74,56 @@ ciofs-fields-nowcast:
     - 'frc_file_[0-9]*'
     - 'bry_file_[0-9]*'
     - 'clm_file_[0-9]*'
+
+# The same model runs, interpolated by NOAA onto a regular lat/lon grid
+# ("regulargrid" files: WCOFS 0.04 deg, 935x833; CIOFS 0.005 deg, 973x1461) at
+# fixed depths (Depth, metres) with currents already rotated to east/north
+# (u_eastward, v_northward). Because the grid is regular, these stores can carry
+# multiscale overviews for web maps (see README, "Multiscale overviews").
+# Latitude/Longitude are 2-D in the files; `rectilinear` turns them into 1-D
+# lat/lon coordinates. Depth is materialized so viewers needn't fetch it from NOAA.
+wcofs-regulargrid-nowcast:
+  bucket_url: s3://noaa-nos-ofs-pds
+  http_base: https://noaa-nos-ofs-pds.s3.amazonaws.com/
+  key_root: wcofs/netcdf/
+  key_template: "%Y/%m/%d/"
+  file_regex: '^wcofs\.t\d{2}z\.\d{8}\.regulargrid\.n\d{3}\.nc$'
+  concat_dim: time
+  loadable: [time, Depth, Latitude, Longitude]
+  rectilinear: {lat: Latitude, lon: Longitude}
+  drop_global_attrs: &ofs_run_attrs
+    - file
+    - history
+    - rst_file
+    - his_base
+    - sta_file
+    - ini_file
+    - avg_file
+    - grd_file
+    - river_file
+    - 'frc_file_[0-9]*'
+    - 'bry_file_[0-9]*'
+    - 'clm_file_[0-9]*'
+  # Overview data is real data: per time step about a third of each variable's
+  # full size (WCOFS 3-D variable: ~128 MB raw per step, so ~43 MB of overviews;
+  # a month of all five is ~40 GB before compression), and building it reads the
+  # variables in full from NOAA. Trim `variables` to what you will map.
+  overviews:
+    variables: [zeta, temp, salt, u_eastward, v_northward]
+    levels: 3
+    method: mean
+
+ciofs-regulargrid-nowcast:
+  bucket_url: s3://noaa-nos-ofs-pds
+  http_base: https://noaa-nos-ofs-pds.s3.amazonaws.com/
+  key_root: ciofs/netcdf/
+  key_template: "%Y/%m/%d/"
+  file_regex: '^ciofs\.t\d{2}z\.\d{8}\.regulargrid\.n\d{3}\.nc$'
+  concat_dim: time
+  loadable: [time, Depth, Latitude, Longitude]
+  rectilinear: {lat: Latitude, lon: Longitude}
+  drop_global_attrs: *ofs_run_attrs
+  overviews:
+    variables: [zeta, temp, salt, u_eastward, v_northward]
+    levels: 3
+    method: mean
