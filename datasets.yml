@@ -47,3 +47,30 @@ wcofs-fields-nowcast:
     - 'frc_file_[0-9]*'
     - 'bry_file_[0-9]*'
     - 'clm_file_[0-9]*'
+
+# CIOFS (Cook Inlet Operational Forecast System, ROMS), NOAA NOS, on the same
+# NODD bucket. Four cycles (t00z/06z/12z/18z) per day, each with six hourly
+# nowcast files (n001..n006) covering the 6 hours up to the cycle time, so
+# consecutive cycles and days are contiguous. The %Y/%m/%d/ layout starts on
+# 2024-11-19; older files sit in flat YYYYMM/ folders this preset does not read.
+# Forecast files (fNNN) overlap across cycles and are not a preset, as for WCOFS.
+ciofs-fields-nowcast:
+  bucket_url: s3://noaa-nos-ofs-pds
+  http_base: https://noaa-nos-ofs-pds.s3.amazonaws.com/
+  key_root: ciofs/netcdf/
+  key_template: "%Y/%m/%d/"
+  file_regex: '^ciofs\.t\d{2}z\.\d{8}\.fields\.n\d{3}\.nc$'
+  concat_dim: ocean_time
+  loadable: [ocean_time]
+  coord_aliases: {lat: lat_rho, lon: lon_rho}
+  drop_global_attrs:
+    - file
+    - history
+    - rst_file
+    - his_base
+    - sta_file
+    - ini_file
+    - river_file
+    - 'frc_file_[0-9]*'
+    - 'bry_file_[0-9]*'
+    - 'clm_file_[0-9]*'

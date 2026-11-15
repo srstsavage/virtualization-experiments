@@ -66,7 +66,7 @@ Lists the source files that would be indexed. No repository is needed.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `dataset` | — | Preset name from the config file (`wcofs-fields-nowcast`) |
+| `dataset` | — | Preset name from the config file (`wcofs-fields-nowcast`, `ciofs-fields-nowcast`) |
 | `--config` | `datasets.yml` next to the script | YAML file of dataset presets |
 | `--repo` | — | Local directory, or `s3://bucket/prefix` (settings from `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL`; see [Local S3](#local-s3-versitygw)). Required unless `--dry-run` |
 | `--start`, `--end` | — | Date range, `YYYY-MM-DD`, inclusive |
@@ -75,6 +75,11 @@ Lists the source files that would be indexed. No repository is needed.
 | `--dry-run` | off | List the files and exit |
 | `--no-validate` | off | Skip the final read-back check |
 | `--force` | off | Re-ingest files whose time steps are already in the store, replacing their references in place instead of skipping them. New files in the range are still appended |
+| `--no-catalog` | off | Don't update the gridlook/Xreds catalogs after the build (see [Catalogs](#catalogs)) |
+| `--scan-catalogs ROOT` | — | Only rebuild both catalogs from every repository under `ROOT`, then exit |
+| `--public-base-url` | see [Catalogs](#catalogs) | Browser URL of the repository root, used for gridlook entries |
+| `--xreds-base-url` | see [Catalogs](#catalogs) | `s3://` URL of the repository root as Xreds sees it |
+| `--xreds-endpoint-url` | see [Catalogs](#catalogs) | S3 endpoint written into Xreds entries (`''` for AWS) |
 
 Every field of a dataset preset can also be overridden from the command line:
 `--bucket-url`, `--http-base`, `--key-root`, `--key-template`, `--file-regex`,
@@ -219,7 +224,7 @@ upload it, e.g. `aws s3 sync --endpoint-url http://localhost:7070
 
 `docker compose up -d` also builds and starts
 [gridlook](https://github.com/d70-t/gridlook) on `http://localhost:3000`, from a
-pinned commit plus `gridlook/coordinates-by-units.patch`. Open a repository
+pinned commit plus `patch/gridlook/coordinates-by-units.patch`. Open a repository
 with `http://localhost:3000/#http://localhost:7070/icechunk/<name>.icechunk`.
 
 ROMS output such as WCOFS has four staggered grids (`lat_rho`, `lat_u`,
@@ -239,6 +244,94 @@ address this:
 `_FillValue` (the Zarr v3 form only xarray decodes), so land cells (1e37) are
 masked outside xarray too. Both repairs apply only to arrays a build creates.
 Repositories built before them must be rebuilt to pick them up.
+
+## Catalogs
+
+`virtualize.py` keeps two catalog files in a `_catalogs/` directory in the
+repository root, next to the `*.icechunk` repositories (`s3://icechunk/_catalogs/`
+for `--repo s3://icechunk/wcofs.icechunk`). On the local S3 server they are
+public too:
+
+| File | For | Public URL (local S3) |
+|---|---|---|
+| `_catalogs/gridlook-catalog.json` | [gridlook catalog](https://github.com/d70-t/gridlook/blob/main/docs/catalogs.md) | `http://localhost:7070/icechunk/_catalogs/gridlook-catalog.json` |
+| `_catalogs/xreds-datasets.yml` | Xreds `DATASETS_MAPPING_FILE` | `s3://icechunk/_catalogs/xreds-datasets.yml` |
+
+**After every build** (not `--dry-run`, not `--no-catalog`), the entry for
+the repository just built is created or replaced in both files. Other entries,
+including ones added by hand, and the gridlook catalog title are left as they
+are. Entries are keyed by repository name (`wcofs.icechunk` becomes the Xreds
+id `wcofs`). They are built from the repository itself (its title, time range
+and source prefix), not from the preset.
+
+**To rebuild both catalogs from scratch**, run scan mode. It needs no dataset,
+dates or `--repo`. It lists the `*.icechunk` repositories directly under the
+root, rewrites both files, and exits:
+
+```bash
+./virtualize.py --scan-catalogs s3://icechunk
+./virtualize.py --scan-catalogs ./repos        # local root (no S3 write needed)
+```
+
+The URLs written into entries default to the compose setup:
+
+- gridlook `url`: for an `s3://` root, `$AWS_ENDPOINT_URL/<bucket>/<prefix>/`
+  (`https://<bucket>.s3.amazonaws.com/<prefix>/` without an endpoint); for a
+  local root, `http://localhost:7070/icechunk/`. Override with
+  `--public-base-url`.
+- Xreds `path`: the `s3://` root itself, or `s3://icechunk/` for a local
+  root. Override with `--xreds-base-url`.
+- Xreds `endpoint_url`: `http://s3:7070` (the S3 service as seen from inside
+  compose) when `AWS_ENDPOINT_URL` is set or the root is local; none (AWS)
+  otherwise. Override with `--xreds-endpoint-url` (`''` for AWS).
+
+The gridlook service mounts `./repos/_catalogs` and serves its catalog as the
+default at `http://localhost:3000/`; it is re-read on every page load. It can
+also be opened from S3 with
+`http://localhost:3000/#http://localhost:7070/icechunk/_catalogs/gridlook-catalog.json`.
+
+## Serving with Xreds
+
+`docker compose up -d` also builds and starts
+[Xreds](https://github.com/asascience-open/xreds) on `http://localhost:8090`,
+from a pinned commit plus `patch/xreds/virtual-icechunk-s3-http.patch`. The image
+follows upstream's `Dockerfile.viewer`: the bundled React viewer is served at
+`http://localhost:8090/`, the API at `/datasets/...` and its docs at `/docs`. It reads its
+catalog from `./repos/_catalogs/xreds-datasets.yml`, mounted into the container
+(Xreds can also read it from S3 or HTTP: any fsspec URL, e.g.
+`s3://icechunk/_catalogs/xreds-datasets.yml`).
+
+Stock Xreds can't open these repositories. Its `virtual-icechunk` loader
+gives no way to set an S3 endpoint, and it only authorizes S3 chunk
+containers, while these repositories reference public HTTPS files. The patch
+changes only that loader:
+
+- `storage_options` may set `endpoint_url`, `allow_http` and
+  `force_path_style`, which are passed to `icechunk.s3_storage`.
+- `virtual_chunk_container: {type: http, store: {path: <prefix>}}` authorizes
+  an HTTP(S) chunk container (anonymous). The container itself comes from the
+  repository's stored config.
+
+Xreds reads the catalog only at startup. It fails to start if the catalog
+does not exist yet. After a build adds a new repository, run `docker compose
+restart xreds`.
+
+Two settings are added to an Xreds entry when the repository needs them,
+judged from the repository's own variables:
+
+- **`drop_variables`: alias coordinates.** Coordinates added by
+  `coord_aliases` (recognised by their `alias of ...` comment, e.g. `lat`,
+  `lon`) are hidden from Xreds. They copy their source's CF attributes, so
+  cf_xarray would find two latitudes and WMS would fail. Gridlook still sees
+  them.
+- **`extensions: {roms: {}}` for ROMS output.** This applies when the
+  repository has `angle`, `lat_rho`, `lon_rho`, `u`, `v`, `temp` or `salt`,
+  and the ROMS rho/u/v and `s_rho` dimensions. The extension adds `u_rotated`
+  and `v_rotated`, currents rotated to east/north on the rho grid. Like
+  upstream's ROMS examples, `dstart` is also dropped.
+
+The NOAA `vdatum` extension, which needs a separate vdatum dataset, is not
+configured.
 
 ## Notes
 

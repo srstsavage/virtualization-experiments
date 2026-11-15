@@ -1,14 +1,21 @@
-# Local S3 (versitygw) for Icechunk repositories.
-#   writes: S3 API on http://localhost:7070 with the keys from .env
-#   reads:  anonymous GET/HEAD/LIST on http://localhost:7070/icechunk/... (CORS: *)
-# ./repos is the bucket "icechunk": ./repos/foo.icechunk is s3://icechunk/foo.icechunk.
+volumes:
+  s3:
+
 services:
+  s3-pre-init:
+    image: alpine
+    volumes:
+      - ./repos:/repos
+      - s3:/s3
+    command: chown -R 1000:993 /repos /s3
   s3:
     image: versity/versitygw:v1.10.0
     ports:
       - 7070:7070
     volumes:
+      - s3:/data/s3
       - ./repos:/data/s3/icechunk
+    user: "1000:993"
     environment:
       ROOT_ACCESS_KEY: "${AWS_ACCESS_KEY_ID:?set AWS_ACCESS_KEY_ID in .env (see .env.template)}"
       ROOT_SECRET_KEY: "${AWS_SECRET_ACCESS_KEY:?set AWS_SECRET_ACCESS_KEY in .env (see .env.template)}"
@@ -16,6 +23,9 @@ services:
       VGW_BACKEND_ARGS: /data/s3
       VGW_CORS_ALLOW_ORIGIN: "*"
       VGW_HEALTH: /health
+    depends_on:
+      s3-pre-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:7070/health"]
       interval: 2s
@@ -45,12 +55,12 @@ services:
             "Resource": ["arn:aws:s3:::icechunk", "arn:aws:s3:::icechunk/*"]}]}'
         aws s3api put-bucket-cors --bucket icechunk --cors-configuration '{
           "CORSRules": [{"AllowedOrigins": ["*"], "AllowedMethods": ["GET", "HEAD"],
-            "AllowedHeaders": ["*"], "MaxAgeSeconds": 3600,
+            "AllowedHeaders": ["*"], "MaxAgeSeconds": 3601,
             "ExposeHeaders": ["Content-Range", "Content-Length", "ETag", "Last-Modified", "Accept-Ranges"]}]}'
         echo "bucket icechunk: public read policy and CORS applied"
 
   # gridlook (https://github.com/d70-t/gridlook) on http://localhost:3000, built
-  # from a pinned commit plus ./gridlook/coordinates-by-units.patch. The patch
+  # from a pinned commit plus ./patch/gridlook/coordinates-by-units.patch. The patch
   # makes gridlook resolve a variable's CF "coordinates" (e.g. ROMS lon_rho
   # lat_rho) by units, so staggered-grid coordinates such as lat_psi are not
   # picked for rho-point data. `git apply` fails the build if the patch no
@@ -58,7 +68,7 @@ services:
   # Open e.g. http://localhost:3000/#http://localhost:7070/icechunk/wcofs.icechunk
   gridlook:
     build:
-      context: ./gridlook
+      context: .
       args:
         GRIDLOOK_REF: c5dae9a0b25cdab93d0bb772f03b332db733c257
       dockerfile_inline: |
@@ -71,13 +81,92 @@ services:
          && git remote add origin https://github.com/d70-t/gridlook.git \
          && git fetch -q --depth 1 origin "$$GRIDLOOK_REF" \
          && git checkout -q FETCH_HEAD
-        COPY coordinates-by-units.patch /tmp/
+        COPY patch/gridlook/coordinates-by-units.patch /tmp/
         RUN git apply --check /tmp/coordinates-by-units.patch \
          && git apply /tmp/coordinates-by-units.patch
         # Install scripts are needed: the git dependency @eeholmes/zarrita-pcodec
         # compiles itself in its prepare script. HUSKY=0 skips gridlook's git hooks.
         RUN HUSKY=0 npm ci && npm run build
+        # Serve the catalog from a mounted directory (see volumes) rather than
+        # the built-in one; a directory mount sees replaced files, a file mount doesn't.
+        RUN ln -sf /catalogs/gridlook.json dist/static/catalog.json
         EXPOSE 3000
         CMD ["npx", "vite", "preview", "--host", "0.0.0.0", "--port", "3000", "--strictPort"]
+    volumes:
+      # The app fetches static/catalog.json at runtime (a symlink to
+      # /catalogs/gridlook-catalog.json), so catalog updates show on reload.
+      - ./repos/_catalogs:/catalogs:ro
     ports:
       - 3000:3000
+
+  # Xreds (https://github.com/asascience-open/xreds) on http://localhost:8090,
+  # built from a pinned commit plus ./patch/xreds/virtual-icechunk-s3-http.patch. The
+  # patch lets virtual-icechunk datasets name an S3 endpoint (endpoint_url,
+  # allow_http, force_path_style) and authorize public HTTP(S) chunk containers
+  # (virtual_chunk_container type: http). The dataset catalog is
+  # ./repos/_catalogs/xreds-datasets.yml, written by virtualize.py. Xreds reads it
+  # once at startup: after adding a dataset, `docker compose restart xreds`.
+  xreds:
+    build:
+      context: .
+      args:
+        XREDS_REF: ad485da889457b2bd5846eaeda9aef450d0e67aa
+      # Upstream's Dockerfile.viewer (API + bundled React viewer, served at /),
+      # with a patched source checkout and upstream Dockerfile's slim runtime.
+      dockerfile_inline: |
+        FROM python:3.12-slim AS source
+        ARG XREDS_REF
+        RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+         && rm -rf /var/lib/apt/lists/*
+        WORKDIR /src
+        RUN git init -q . \
+         && git remote add origin https://github.com/asascience-open/xreds.git \
+         && git fetch -q --depth 1 origin "$$XREDS_REF" \
+         && git checkout -q FETCH_HEAD
+        COPY patch/xreds/virtual-icechunk-s3-http.patch /tmp/
+        RUN git apply --check /tmp/virtual-icechunk-s3-http.patch \
+         && git apply /tmp/virtual-icechunk-s3-http.patch
+
+        FROM node:22-alpine AS viewer
+        WORKDIR /opt/viewer
+        COPY --from=source /src/viewer/ ./
+        # Empty base URL: the viewer calls the API on its own origin.
+        ARG ROOT_PATH=""
+        ENV VITE_XREDS_BASE_URL=$${ROOT_PATH}
+        RUN npm ci && npm run build
+
+        FROM python:3.12-slim AS dependencies
+        RUN apt-get update && apt-get install -y --no-install-recommends \
+            git curl build-essential libhdf5-dev libopenblas-dev libgeos-dev \
+            libnetcdf-dev libproj-dev libudunits2-dev libeccodes-dev \
+         && rm -rf /var/lib/apt/lists/*
+        RUN python3 -m pip install --no-cache-dir uv
+        COPY --from=source /src/requirements.txt /tmp/requirements.txt
+        RUN uv venv /opt/venv --python /usr/local/bin/python3 \
+         && uv pip install --python=/opt/venv/bin/python -r /tmp/requirements.txt
+
+        FROM python:3.12-slim
+        RUN apt-get update && apt-get install -y --no-install-recommends libexpat1 \
+         && rm -rf /var/lib/apt/lists/*
+        WORKDIR /opt/xreds
+        COPY --from=dependencies /opt/venv /opt/venv
+        COPY --from=source /src/xreds ./xreds
+        COPY --from=source /src/app.py ./app.py
+        COPY --from=source /src/static ./static
+        # app.py mounts ./viewer/dist at / when it exists.
+        COPY --from=viewer /opt/viewer/dist ./viewer/dist
+        ENV PATH="/opt/venv/bin:$${PATH}" MPLBACKEND=Agg PORT=8090 WORKERS=1 LOG_LEVEL=info
+        EXPOSE 8090
+        CMD ["sh", "-c", "exec uvicorn app:app --host 0.0.0.0 --port $${PORT} --workers $${WORKERS} --log-level $${LOG_LEVEL}"]
+    depends_on:
+      s3-init:
+        condition: service_completed_successfully
+    environment:
+      DATASETS_MAPPING_FILE: /catalogs/xreds.yml
+      AWS_ENDPOINT_URL: http://s3:7070
+      AWS_REGION: us-east-1
+      ROOT_PATH: /
+    volumes:
+      - ./repos/_catalogs:/catalogs:ro
+    ports:
+      - 8090:8090

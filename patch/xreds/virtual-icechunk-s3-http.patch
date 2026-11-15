@@ -1,0 +1,27 @@
+diff --git a/xreds/dataset_utils.py b/xreds/dataset_utils.py
+index 194755b..a009b2a 100644
+--- a/xreds/dataset_utils.py
++++ b/xreds/dataset_utils.py
+@@ -283,6 +283,10 @@ def _load_virtual_icechunk(
+             ic_creds = icechunk.containers_credentials(
+                 {store.get("path", ""): icechunk.s3_anonymous_credentials()}
+             )
++        elif chunk_params.get("type", "").lower() == "http":
++            # Public HTTP(S) chunks: the container is in the repo's own config,
++            # it only needs authorizing (no credentials).
++            ic_creds = {chunk_params.get("store", {}).get("path", ""): None}
+ 
+     repo_type = storage_options.pop(
+         "type",
+@@ -299,7 +303,10 @@ def _load_virtual_icechunk(
+             bucket=storage_options.pop("bucket", parsed_bucket),
+             prefix=storage_options.pop("prefix", parsed_prefix),
+             region=storage_options.pop("region", "us-east-1"),
+-            anonymous=storage_options.pop("anonymous", True)
++            anonymous=storage_options.pop("anonymous", True),
++            endpoint_url=storage_options.pop("endpoint_url", None),
++            allow_http=storage_options.pop("allow_http", False),
++            force_path_style=storage_options.pop("force_path_style", False),
+         )
+     if repo_type == "local":
+         ic_storage = icechunk.local_filesystem_storage(path=dataset_path)

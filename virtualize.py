@@ -37,6 +37,13 @@ Examples
     ./virtualize.py wcofs-fields-nowcast --repo s3://icechunk/wcofs.icechunk \\
         --start 2026-10-01 --end 2026-10-31
 
+    # Rebuild the gridlook/Xreds catalogs from every repository in a root, then exit
+    ./virtualize.py --scan-catalogs s3://icechunk
+
+Catalogs: after a build, the repository's entry in gridlook.json and
+xreds.yml (in _catalogs/ beside the repository) is created
+or updated; other entries are kept (--no-catalog to skip).
+
 Destination (--repo): a local directory, or s3://bucket/prefix. For s3:// the
 standard variables AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_ENDPOINT_URL
 (any S3-compatible server; http:// allowed, path-style addressing) are read from
@@ -529,6 +536,10 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
     log.info("done: %d new, %d replaced step(s), %d total", total_new, total_replaced, have.size)
     if not args.no_validate:
         validate(storage, ds, expected_steps=have.size, expected_last=have[-1] if have.size else None)
+    if not args.no_catalog:
+        root, repo_name = split_repo(args.repo)
+        target = catalog_target(root, args.public_base_url, args.xreds_base_url, args.xreds_endpoint_url)
+        upsert_catalogs(target, repo_name, storage)
 
 
 def validate(storage: ic.Storage, ds: Dataset, expected_steps: int, expected_last) -> None:
@@ -553,6 +564,260 @@ def validate(storage: ic.Storage, ds: Dataset, expected_steps: int, expected_las
     )
 
 
+# --------------------------------------------------------------------------- #
+# Catalogs: gridlook-catalog.json and xreds-datasets.yml in _catalogs/ under the
+# repository root (the directory/prefix holding the *.icechunk repositories). Entries are built
+# from each repository's own metadata, so no preset is needed to describe one.
+# --------------------------------------------------------------------------- #
+CATALOG_DIR = "_catalogs"
+GRIDLOOK_CATALOG = f"{CATALOG_DIR}/gridlook.json"
+XREDS_CATALOG = f"{CATALOG_DIR}/xreds.yml"
+# Defaults for a local root: the compose layout, where ./repos is the bucket
+# "icechunk", served at localhost:7070 (browser) and s3:7070 (other containers).
+LOCAL_PUBLIC_BASE = "http://localhost:7070/icechunk/"
+LOCAL_XREDS_BASE = "s3://icechunk/"
+COMPOSE_S3_ENDPOINT = "http://s3:7070"
+
+
+@dataclass(frozen=True)
+class CatalogTarget:
+    root: str  # local directory or s3://bucket[/prefix], no trailing "/"
+    public_base: str  # browser URL of the root, ends in "/"
+    xreds_base: str  # s3:// URL of the root as Xreds sees it, ends in "/"
+    xreds_endpoint: str | None  # S3 endpoint Xreds uses; None = AWS
+
+
+def split_repo(repo_arg: str) -> tuple[str, str]:
+    """(root, name) of a repository argument: its parent and its last component."""
+    repo_arg = repo_arg.rstrip("/")
+    if repo_arg.startswith("s3://"):
+        root, _, name = repo_arg.rpartition("/")
+        return root, name
+    path = Path(repo_arg).resolve()
+    return str(path.parent), path.name
+
+
+def catalog_target(root: str, public_base: str | None, xreds_base: str | None,
+                   xreds_endpoint: str | None) -> CatalogTarget:
+    """Fill in defaults. An s3:// root is addressed through AWS_ENDPOINT_URL (or
+    AWS itself); a local root is assumed to be ./repos of the compose setup."""
+    root = root.rstrip("/")
+    endpoint = os.environ.get("AWS_ENDPOINT_URL") or None
+    if root.startswith("s3://"):
+        bucket, _, prefix = root[5:].partition("/")
+        path = f"{prefix}/" if prefix else ""
+        default_public = (f"{endpoint.rstrip('/')}/{bucket}/{path}" if endpoint
+                          else f"https://{bucket}.s3.amazonaws.com/{path}")
+        default_xreds, default_endpoint = root + "/", COMPOSE_S3_ENDPOINT if endpoint else None
+    else:
+        default_public, default_xreds, default_endpoint = LOCAL_PUBLIC_BASE, LOCAL_XREDS_BASE, COMPOSE_S3_ENDPOINT
+    slash = lambda u: u if u.endswith("/") else u + "/"  # noqa: E731
+    return CatalogTarget(
+        root=root,
+        public_base=slash(public_base or default_public),
+        xreds_base=slash(xreds_base or default_xreds),
+        xreds_endpoint=default_endpoint if xreds_endpoint is None else (xreds_endpoint or None),
+    )
+
+
+def root_store(root: str):
+    """obstore store for an s3:// root, with the same AWS_* settings as s3_options()."""
+    from obstore.store import S3Store
+    env = lambda k: os.environ.get(k) or None  # noqa: E731
+    bucket, _, prefix = root[5:].partition("/")
+    endpoint = env("AWS_ENDPOINT_URL")
+    kwargs: dict = {"region": env("AWS_REGION") or env("AWS_DEFAULT_REGION") or "us-east-1"}
+    if endpoint:
+        kwargs["endpoint"] = endpoint
+    key, secret = env("AWS_ACCESS_KEY_ID"), env("AWS_SECRET_ACCESS_KEY")
+    if key and secret:
+        kwargs |= {"access_key_id": key, "secret_access_key": secret}
+        if env("AWS_SESSION_TOKEN"):
+            kwargs["session_token"] = env("AWS_SESSION_TOKEN")
+    client = {"allow_http": True} if endpoint and endpoint.startswith("http://") else None
+    return S3Store(bucket, prefix=prefix or None, client_options=client, **kwargs)
+
+
+def read_root_file(root: str, name: str) -> str | None:
+    if root.startswith("s3://"):
+        import obstore
+        from obstore.exceptions import NotFoundError
+        try:
+            return bytes(obstore.get(root_store(root), name).bytes()).decode()
+        except (FileNotFoundError, NotFoundError):  # obstore raises either
+            return None
+    path = Path(root, name)
+    return path.read_text() if path.is_file() else None
+
+
+def write_root_file(root: str, name: str, text: str, content_type: str) -> None:
+    if root.startswith("s3://"):
+        import obstore
+        obstore.put(root_store(root), name, text.encode(), attributes={"Content-Type": content_type})
+    else:
+        path = Path(root, name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+
+def list_repos(root: str) -> list[str]:
+    """Names of the *.icechunk repositories directly under root."""
+    if root.startswith("s3://"):
+        names = [p.rstrip("/").rsplit("/", 1)[-1] for p in root_store(root).list_with_delimiter()["common_prefixes"]]
+    else:
+        names = [p.name for p in Path(root).iterdir() if p.is_dir()]
+    return sorted(n for n in names if n.endswith(".icechunk"))
+
+
+def describe_repo(storage: ic.Storage) -> dict | None:
+    """Catalog-relevant facts about a repository, from its config and committed
+    metadata only (no virtual chunks are read). None if it holds no data."""
+    repo = ic.Repository.open(storage)
+    prefixes = list((repo.config.virtual_chunk_containers or {}).keys())
+    store = repo.readonly_session("main").store
+    try:
+        group = zarr.open_group(store, mode="r")
+    except zarr.errors.GroupNotFoundError:
+        return None
+    attrs = dict(group.attrs)
+    arrays = dict(group.arrays())
+    variables = {name: dict(arr.attrs) for name, arr in arrays.items()}
+    dims = {d for arr in arrays.values() for d in (arr.metadata.dimension_names or ()) if d}
+    # Time range from the materialized time coordinate (axis T / standard_name time).
+    t0 = t1 = None
+    steps = 0
+    for name, arr in arrays.items():
+        a = arr.attrs
+        if arr.ndim == 1 and (a.get("axis") == "T" or a.get("standard_name") == "time"):
+            # Decode just this (materialized) array; opening the whole dataset
+            # would read virtual scalars, which needs chunk authorization.
+            var = xr.Variable(("t",), arr[:], {k: v for k, v in a.items() if k != "_ARRAY_DIMENSIONS"})
+            t = xr.decode_cf(xr.Dataset({"t": var}))["t"].values
+            if t.size:
+                steps, t0, t1 = t.size, str(t[0])[:16], str(t[-1])[:16]
+            break
+    return {"attrs": attrs, "prefix": attrs.get("virtualized_source") or (prefixes[0] if prefixes else None),
+            "steps": steps, "first": t0, "last": t1, "variables": variables, "dims": dims}
+
+
+# What Xreds' "roms" extension reads: it rotates u/v (on the u/v grids) onto the
+# rho grid with `angle`, shaped like temp or salt (which need an s_rho dim).
+ROMS_VARIABLES = {"angle", "lat_rho", "lon_rho", "u", "v"}
+ROMS_DIMS = {"s_rho", "xi_rho", "eta_rho", "xi_u", "eta_u", "xi_v", "eta_v"}
+
+
+def is_roms(info: dict) -> bool:
+    names = info["variables"].keys()
+    return (ROMS_VARIABLES <= names and ROMS_DIMS <= info["dims"]
+            and bool({"temp", "salt"} & names))
+
+
+def coord_aliases_in(info: dict) -> list[str]:
+    """Coordinates added by coord_aliases (see repair_metadata), recognised by
+    their comment. They duplicate their source's CF attributes, which makes
+    cf_xarray (Xreds WMS/EDR) see two candidates for one coordinate."""
+    return sorted(n for n, a in info["variables"].items()
+                  if str(a.get("comment", "")).startswith("alias of "))
+
+
+def catalog_entries(target: CatalogTarget, name: str, info: dict) -> tuple[dict, tuple[str, dict]]:
+    """(gridlook entry, (xreds id, xreds entry)) for repository `name`."""
+    attrs = info["attrs"]
+    dataset_id = name.removesuffix(".icechunk")
+    source = attrs.get("virtualized_dataset") or dataset_id
+    parts = [str(attrs["title"]).strip()] if attrs.get("title") else []
+    if info["first"]:
+        parts.append(f"{info['steps']} time steps, {info['first']} to {info['last']}")
+    if info["prefix"]:
+        parts.append(f"Virtual Icechunk store over {info['prefix']}")
+    gridlook = {"title": source, "url": target.public_base + name, "description": ". ".join(parts),
+                "tags": {"repository": dataset_id, "format": "virtual-icechunk"}}
+    if info["prefix"]:
+        gridlook["tags"]["source"] = info["prefix"].split("/")[2]  # host
+
+    storage_options: dict = {}
+    if target.xreds_endpoint:
+        storage_options |= {"endpoint_url": target.xreds_endpoint,
+                            "allow_http": target.xreds_endpoint.startswith("http://"),
+                            "force_path_style": True}
+    if info["prefix"]:
+        # Needs the patched Xreds (xreds/virtual-icechunk-s3-http.patch).
+        storage_options["virtual_chunk_container"] = {"type": "http", "store": {"path": info["prefix"]}}
+    xreds = {"path": target.xreds_base + name, "type": "virtual-icechunk", "chunks": {},
+             "storage_options": storage_options}
+    # Gridlook-only alias coordinates are hidden from Xreds; ROMS output gets
+    # Xreds' roms extension (rotated currents) and, like upstream's ROMS
+    # examples, drops dstart (a run-start scalar, not data).
+    drop = coord_aliases_in(info)
+    roms = is_roms(info)
+    if roms and "dstart" in info["variables"]:
+        drop.append("dstart")
+    if drop:
+        xreds["drop_variables"] = drop
+    if roms:
+        xreds["extensions"] = {"roms": {}}
+    return gridlook, (dataset_id, xreds)
+
+
+def write_catalogs(target: CatalogTarget, gridlook: dict, xreds: dict) -> None:
+    write_root_file(target.root, GRIDLOOK_CATALOG, json.dumps(gridlook, indent=2) + "\n", "application/json")
+    header = "# Generated by virtualize.py; entries are keyed by repository name.\n"
+    write_root_file(target.root, XREDS_CATALOG, header + yaml.safe_dump(xreds, sort_keys=False), "application/yaml")
+    where = target.root if target.root.startswith("s3://") else os.path.relpath(target.root)
+    log.info("catalogs: %s/%s; gridlook: %s%s", where, CATALOG_DIR,
+             target.public_base, GRIDLOOK_CATALOG)
+
+
+def new_gridlook_catalog() -> dict:
+    return {"type": "gridlook_catalog", "title": "Virtual Icechunk stores", "datasets": []}
+
+
+def upsert_catalogs(target: CatalogTarget, name: str, storage: ic.Storage) -> None:
+    """Create or update only `name`'s entry in both catalogs; other entries are
+    kept as they are, in their order."""
+    info = describe_repo(storage)
+    if info is None:
+        log.warning("catalogs: %s holds no data; not listed", name)
+        return
+    entry, (dataset_id, xentry) = catalog_entries(target, name, info)
+
+    text = read_root_file(target.root, GRIDLOOK_CATALOG)
+    gridlook = json.loads(text) if text else new_gridlook_catalog()
+    datasets = gridlook.setdefault("datasets", [])
+    same = [i for i, d in enumerate(datasets) if d.get("url") == entry["url"]]
+    if same:
+        datasets[same[0]] = entry
+        for i in reversed(same[1:]):
+            del datasets[i]
+    else:
+        datasets.append(entry)
+
+    text = read_root_file(target.root, XREDS_CATALOG)
+    xreds = (yaml.safe_load(text) if text else None) or {}
+    xreds[dataset_id] = xentry
+    write_catalogs(target, gridlook, xreds)
+
+
+def scan_catalogs(target: CatalogTarget) -> None:
+    """Rewrite both catalogs from the repositories found under the root."""
+    gridlook, xreds = new_gridlook_catalog(), {}
+    old = read_root_file(target.root, GRIDLOOK_CATALOG)
+    if old:
+        gridlook["title"] = json.loads(old).get("title", gridlook["title"])
+    for name in list_repos(target.root):
+        repo_arg = f"{target.root}/{name}"
+        info = describe_repo(make_storage(repo_arg))
+        if info is None:
+            log.warning("catalogs: %s holds no data; skipped", name)
+            continue
+        entry, (dataset_id, xentry) = catalog_entries(target, name, info)
+        gridlook["datasets"].append(entry)
+        xreds[dataset_id] = xentry
+        log.info("catalogs: %s: %s", name, entry["description"])
+    log.info("catalogs: %d repositor%s found", len(xreds), "y" if len(xreds) == 1 else "ies")
+    write_catalogs(target, gridlook, xreds)
+
+
 def parse_date(s: str) -> dt.date:
     return dt.date.fromisoformat(s)
 
@@ -566,7 +831,31 @@ def main() -> None:
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument("--config", type=Path, default=DATASETS_FILE,
                      help=f"dataset presets file (default: {DATASETS_FILE.name} next to this script)")
-    config_path = pre.parse_known_args()[0].config
+    cat = pre.add_argument_group(
+        "catalogs",
+        f"After a build, the repository's entry in {GRIDLOOK_CATALOG} and {XREDS_CATALOG} (in "
+        f"{CATALOG_DIR}/ next to the repository) is created or updated; other entries are left alone.")
+    cat.add_argument("--scan-catalogs", metavar="ROOT",
+                     help="only rebuild both catalogs from all *.icechunk repositories under ROOT "
+                          "(local directory or s3://bucket[/prefix]) and exit; no dataset or dates needed")
+    cat.add_argument("--public-base-url", metavar="URL",
+                     help="browser URL of the repository root, for gridlook (default: from AWS_ENDPOINT_URL "
+                          f"for s3:// roots, {LOCAL_PUBLIC_BASE} for local ones)")
+    cat.add_argument("--xreds-base-url", metavar="URL",
+                     help=f"s3:// URL of the repository root as Xreds sees it (default: the s3:// root itself, "
+                          f"{LOCAL_XREDS_BASE} for local roots)")
+    cat.add_argument("--xreds-endpoint-url", metavar="URL",
+                     help=f"S3 endpoint Xreds uses (default: {COMPOSE_S3_ENDPOINT} when AWS_ENDPOINT_URL "
+                          "is set or the root is local, else AWS; '' for AWS)")
+    known, extra = pre.parse_known_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if known.scan_catalogs:
+        if extra:
+            pre.error(f"--scan-catalogs takes only the catalog options, not: {' '.join(extra)}")
+        scan_catalogs(catalog_target(known.scan_catalogs, known.public_base_url,
+                                     known.xreds_base_url, known.xreds_endpoint_url))
+        return
+    config_path = known.config
     if not config_path.is_file():
         pre.error(f"--config: no such file: {config_path}")
     datasets = load_datasets(config_path)
@@ -593,9 +882,9 @@ def main() -> None:
                    help="comma-separated global attribute names to drop (wildcards allowed, e.g. 'frc_file_*')")
     p.add_argument("--coord-aliases",
                    help="comma-separated alias=source coordinate aliases, e.g. 'lat=lat_rho,lon=lon_rho' ('' for none)")
+    p.add_argument("--no-catalog", action="store_true", help="do not update the catalogs after the build")
     args = p.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if args.end < args.start:
         p.error("--end is before --start")
     if not args.dry_run and not args.repo:

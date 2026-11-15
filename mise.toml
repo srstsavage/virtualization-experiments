@@ -1,3 +1,4 @@
 [tools]
+"aqua:lusingander/stu" = "latest"
 "github:earth-mover/core-drill" = "latest"
 uv = "latest"
