@@ -8,7 +8,7 @@
 //
 // Query parameters: catalog=<gridlook catalog URL> (lists repositories tagged
 // "overviews"), repo=<repository URL> (open one directly), variable=, time=, depth=
-// (indices), from=&to= (animation loop bounds, time indices), level= (lock a pyramid level; default auto), zoom=&lat=&lon= (initial
+// (indices), palette=<name>, from=&to= (animation loop bounds, time indices), level= (lock a pyramid level; default auto), zoom=&lat=&lon= (initial
 // view), debug (log chunk keys in window.__keys).
 import * as maplibregl from 'maplibre-gl'
 import { ZarrLayer } from '@carbonplan/zarr-layer'
@@ -19,12 +19,26 @@ import { createLoadTracker, mountLoadsWidget } from './loads.js'
 const GROUP = 'multiscale'
 const q = new URLSearchParams(location.search)
 const CATALOG = q.get('catalog') ?? `${location.protocol}//${location.hostname}:7070/icechunk/_catalogs/gridlook.json`
-const SEQUENTIAL = ['#440154', '#46327e', '#365c8d', '#277f8e', '#1fa187', '#4ac16d', '#a0da39', '#fde725']
-const DIVERGING = ['#2166ac', '#4393c3', '#92c5de', '#d1e5f0', '#fddbc7', '#f4a582', '#d6604d', '#b2182b']
+// Colour palettes, low to high. "auto" uses viridis, or blue–red when the range spans zero.
+// Perceptually ordered palettes only: no rainbow/jet, which invents edges in smooth fields.
+const PALETTES = {
+  viridis: { label: 'Viridis', colors: ['#440154', '#46327e', '#365c8d', '#277f8e', '#1fa187', '#4ac16d', '#a0da39', '#fde725'] },
+  magma: { label: 'Magma', colors: ['#000004', '#221150', '#5f187f', '#982d80', '#d3436e', '#f8765c', '#febb81', '#fcfdbf'] },
+  cividis: { label: 'Cividis (colour-blind safe)', colors: ['#00224e', '#173a6e', '#424e6c', '#62646f', '#7f7c75', '#a09674', '#c4b26a', '#fee838'] },
+  blues: { label: 'Blues', colors: ['#f7fbff', '#deebf7', '#c6dbef', '#9ecae1', '#6baed6', '#4292c6', '#2171b5', '#08306b'] },
+  greys: { label: 'Greys', colors: ['#ffffff', '#e0e0e0', '#bdbdbd', '#969696', '#737373', '#525252', '#252525', '#000000'] },
+  bluered: { label: 'Blue – red (diverging)', colors: ['#2166ac', '#4393c3', '#92c5de', '#d1e5f0', '#fddbc7', '#f4a582', '#d6604d', '#b2182b'] },
+  bluewhitered: { label: 'Blue – white – red (diverging)', colors: ['#2166ac', '#4393c3', '#92c5de', '#f7f7f7', '#f7f7f7', '#f4a582', '#d6604d', '#b2182b'] },
+  browngreen: { label: 'Brown – teal (diverging)', colors: ['#8c510a', '#bf812d', '#dfc27d', '#f6e8c3', '#c7eae5', '#80cdc1', '#35978f', '#01665e'] },
+}
 
 const $ = (id) => document.getElementById(id)
 const ui = { repo: $('repo'), variable: $('variable'), time: $('time'), depth: $('depth'), cmin: $('cmin'), cmax: $('cmax'),
-  play: $('play'), delay: $('delay'), fitview: $('fitview'), level: $('level'), tstart: $('tstart'), tend: $('tend') }
+  play: $('play'), delay: $('delay'), fitview: $('fitview'), level: $('level'), palette: $('palette'), tstart: $('tstart'), tend: $('tend') }
+ui.palette.innerHTML = '<option value="auto">Auto (viridis; blue – red across zero)</option>'
+  + Object.entries(PALETTES).map(([k, p]) => `<option value="${k}">${p.label}</option>`).join('')
+ui.palette.value = PALETTES[q.get('palette')] ? q.get('palette') : 'auto'
+ui.delay.value = '100' // 0.1 s; also overrides a browser restoring the last choice on reload
 const state = { store: null, ms: null, layer: null, layerLoading: false, vars: {}, times: [], depths: null, levels: 0, maxZooms: [] }
 
 if (q.has('debug')) window.__keys = []
@@ -213,7 +227,8 @@ async function autoRange() {
 function fmt(v) { return Math.abs(v) >= 100 ? v.toFixed(0) : Number(v.toPrecision(3)).toString() }
 
 function updateLegend(clim) {
-  const cmap = clim[0] < 0 && clim[1] > 0 ? DIVERGING : SEQUENTIAL
+  const key = ui.palette.value !== 'auto' ? ui.palette.value : clim[0] < 0 && clim[1] > 0 ? 'bluered' : 'viridis'
+  const cmap = PALETTES[key].colors
   $('legend').style.background = `linear-gradient(to right, ${cmap.join(',')})`
   $('lmin').textContent = fmt(clim[0])
   $('lmax').textContent = fmt(clim[1])
@@ -412,6 +427,75 @@ function applyClim() {
   state.layer.setColormap(updateLegend(clim))
 }
 for (const input of [ui.cmin, ui.cmax]) input.addEventListener('change', applyClim)
+ui.palette.addEventListener('change', applyClim)
+
+// Drag on the colour bar to set the range to the values under the drag, as on the loop
+// band; dragging past an end of the bar extends the range beyond it. A click without
+// dragging moves the nearer bound to the clicked value. The tip below the pointer shows
+// the value under it, or while dragging, the range that releasing will apply.
+{
+  const bar = $('legendbar'), sel = $('legendsel'), tip = $('climtip')
+  const current = () => { const c = [Number(ui.cmin.value), Number(ui.cmax.value)]; return c[0] < c[1] ? c : null }
+  const frac = (x) => { const r = $('legend').getBoundingClientRect(); return (x - r.left) / r.width }
+  // Values at the bar's resolution: three significant digits of the range's span.
+  const valueAt = (clim, f) => {
+    const span = clim[1] - clim[0], step = 10 ** (Math.floor(Math.log10(span)) - 2)
+    return Number((Math.round((clim[0] + f * span) / step) * step).toPrecision(12))
+  }
+  const units = () => { const u = state.vars[ui.variable.value]?.attributes?.units; return u ? ` ${u}` : '' }
+  function showClimTip(x, text) {
+    const box = bar.getBoundingClientRect()
+    tip.textContent = text
+    tip.hidden = false
+    const half = tip.offsetWidth / 2
+    tip.style.left = `${Math.max(half, Math.min(box.width - half, x - box.left))}px`
+  }
+  function hover(e) {
+    const clim = current()
+    if (!clim || !inside(bar, e)) { tip.hidden = true; return }
+    showClimTip(e.clientX, `${valueAt(clim, Math.max(0, Math.min(1, frac(e.clientX))))}${units()}`)
+  }
+  let drag = null // { clim, x0, a: fraction at the press, lo, hi, moved }
+  bar.addEventListener('pointerdown', (e) => {
+    const clim = current()
+    if (!clim || !state.layer || e.button !== 0) return
+    drag = { clim, x0: e.clientX, a: frac(e.clientX), moved: false }
+    bar.setPointerCapture(e.pointerId)
+    e.preventDefault()
+  })
+  bar.addEventListener('pointermove', (e) => {
+    if (!drag) return hover(e)
+    if (!drag.moved && Math.abs(e.clientX - drag.x0) < 3) return
+    drag.moved = true
+    const f = frac(e.clientX), a = Math.min(drag.a, f), b = Math.max(drag.a, f)
+    drag.lo = valueAt(drag.clim, a); drag.hi = valueAt(drag.clim, b)
+    const ca = Math.max(0, Math.min(1, a)), cb = Math.max(0, Math.min(1, b)), w = $('legend').offsetWidth
+    sel.style.left = `${ca * w}px`; sel.style.width = `${Math.max(4, (cb - ca) * w)}px`
+    sel.hidden = false
+    showClimTip(e.clientX, `${drag.lo} – ${drag.hi}${units()}`)
+  })
+  const end = (e) => {
+    if (!drag) return
+    const d = drag
+    drag = null
+    sel.hidden = true
+    if (e.type === 'pointerup') {
+      if (d.moved && d.lo < d.hi) {
+        ui.cmin.value = String(d.lo); ui.cmax.value = String(d.hi)
+        applyClim()
+      } else if (!d.moved) {
+        const v = valueAt(d.clim, Math.max(0, Math.min(1, d.a)))
+        if (Math.abs(v - d.clim[0]) <= Math.abs(v - d.clim[1])) { if (v < d.clim[1]) ui.cmin.value = String(v) }
+        else if (v > d.clim[0]) ui.cmax.value = String(v)
+        applyClim()
+      }
+    }
+    hover(e) // released outside: pointerleave came while captured, so this hides the tip
+  }
+  bar.addEventListener('pointerleave', () => { if (!drag) tip.hidden = true })
+  bar.addEventListener('pointerup', end)
+  bar.addEventListener('pointercancel', end)
+}
 
 // Fit to view: min and max of the current slice inside the visible map, read at the
 // level being drawn (so mostly from chunks already loaded). The query polygon is the

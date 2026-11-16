@@ -24,7 +24,15 @@
       border: 1px solid var(--line); border-radius: 4px; padding: 3px 5px; }
     input[type=range] { padding: 0; }
     .row { display: flex; gap: 6px; } .row > * { flex: 1; }
-    #legend { height: 10px; border-radius: 3px; margin-top: 10px; }
+    /* colour bar: a 18px hit area around the 10px bar; drag on it to pick a new range */
+    #legendbar { position: relative; margin-top: 6px; padding: 4px 0; cursor: ew-resize; touch-action: none; user-select: none; }
+    #legend { height: 10px; border-radius: 3px; }
+    #legendsel { position: absolute; top: 2px; height: 14px; box-sizing: border-box; border: 2px solid var(--fg);
+      border-radius: 3px; pointer-events: none; }
+    #climtip { position: absolute; z-index: 3; top: 100%; transform: translateX(-50%); margin-top: 2px; pointer-events: none;
+      padding: 2px 6px; border-radius: 4px; background: var(--fg); color: var(--bg); font-size: 11px; white-space: nowrap;
+      font-variant-numeric: tabular-nums; }
+    #legendsel[hidden], #climtip[hidden] { display: none; }
     #legend-labels { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; }
     #status { margin-top: 8px; color: var(--muted); font-size: 12px; min-height: 1.4em; }
     #status.error { color: #c0392b; }
@@ -133,7 +141,7 @@
       </div>
       <div class="row playrow">
         <button id="play" type="button" aria-pressed="false">▶ Play</button>
-        <select id="delay" aria-label="Delay between steps" title="Delay between steps, after each step has loaded">
+        <select id="delay" autocomplete="off" aria-label="Delay between steps" title="Delay between steps, after each step has loaded">
           <option value="2000">2 s</option><option value="1000">1 s</option><option value="500">0.5 s</option>
           <option value="333">0.33 s</option><option value="200">0.2 s</option><option value="100" selected>0.1 s</option>
         </select>
@@ -143,13 +151,17 @@
       <label for="depth">Depth</label>
       <select id="depth"></select>
     </div>
+    <label for="palette">Palette</label>
+    <select id="palette" autocomplete="off"></select>
     <label for="cmin">Colour range</label>
     <div class="row climrow">
       <input id="cmin" type="number" step="any" aria-label="Colour range minimum">
       <input id="cmax" type="number" step="any" aria-label="Colour range maximum">
       <button id="fitview" type="button" title="Set the range to the minimum and maximum of the data in view, at the level drawn">Fit to view</button>
     </div>
-    <div id="legend"></div>
+    <div id="legendbar" aria-label="Colour bar. Drag to select a new colour range; drag past an end to widen it.">
+      <div id="legend"></div><span id="legendsel" hidden></span><div id="climtip" role="tooltip" hidden></div>
+    </div>
     <div id="legend-labels"><span id="lmin"></span><span id="lunits"></span><span id="lmax"></span></div>
     <div id="status">Loading…</div>
   </div>
