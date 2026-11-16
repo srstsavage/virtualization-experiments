@@ -20,7 +20,7 @@ Background reading:
 
 # Data sources
 
-* https://registry.opendata.aws/noaa-ofs/
+* https://registry.opendata.aws/noaa-ofs/ (https://tidesandcurrents.noaa.gov/ofs/ofs_faq.html)
 
 # virtualize.py usage
 
@@ -66,6 +66,54 @@ history and skipped without being opened, so re-running a range is a quick
 no-op. New data must come after the last time already in the store;
 back-filling earlier dates is refused (rebuild into a new repository instead).
 
+## Best time series (nowcast + forecast)
+
+The `wcofs-regulargrid-best` and `ciofs-regulargrid-best` presets hold one
+"best" file per time step: nowcast data up to the latest model cycle, then the
+newest forecast up to the end of the forecast (72 h WCOFS, 48 h CIOFS). Each
+step is filled from the best file published so far:
+
+**nowcast > newer forecast > older forecast**
+
+Keep such a store current by re-running it on a schedule (e.g. hourly cron)
+with an open end:
+
+```bash
+./virtualize.py wcofs-regulargrid-best --repo s3://icechunk/wcofs-rg-best.icechunk \
+    --start today-1
+```
+
+Each run works out the best file for every valid time from the file names
+alone, without opening anything. It then opens only the files that add a new
+step (appended) or beat the file the store holds for that step (references,
+and overview levels, replaced in place). When no new cycle has appeared, a run
+does nothing and makes no commit. `--force` re-ingests the chosen files even
+when they rank the same. `--start today-N` / `today` and an omitted `--end`
+exist for this use; `--end` is required only for plain presets.
+
+Each step's origin is stored in two small, materialized coordinates:
+`source_kind` (0 = nowcast, 1 = forecast; `flag_meanings`) and
+`forecast_reference_time` (the model cycle). Use them to tell forecast steps
+from nowcast ones, e.g. `ds.time[ds.source_kind == 1]`. The commit metadata
+records `upgraded` entries (file, and what it replaced). Xreds entries hide
+both coordinates.
+
+How it is configured: the preset has `sources` instead of `file_regex` (see
+[Adding a dataset](#adding-a-dataset)). Each source is a regex with named
+groups for the cycle date and hour and the lead time; the file's valid time,
+cycle + lead + `lead_offset_hours`, is checked against the file when it is
+opened. Steps that fall inside the store but are not in it (a different time
+step, an old gap) are refused, as for appends.
+
+Replacing steps leaves superseded data behind in old snapshots: chiefly
+overview chunks, about 48 CIOFS steps per cycle. So after every run that
+commits, snapshots older than `--retain` (default `3d`) are expired and
+anything only they used is garbage-collected. `--retain 0` keeps only the
+latest snapshot; use it only when nothing else writes to the repository at the
+same time. `--no-gc` turns this off. Expired commits also lose the record of
+which files they indexed, so a plain preset re-run over an old window reopens
+those files (metadata only) before skipping them by their times.
+
 ## Preview without writing
 
 ```bash
@@ -74,22 +122,26 @@ back-filling earlier dates is refused (rebuild into a new repository instead).
 
 Lists the source files that would be indexed, with their valid times. The
 candidate files are opened (metadata only) to read those times. No repository
-is needed.
+is needed. For `sources` presets the valid times come from the names, so
+nothing is opened. The best file per step is listed with its kind and cycle,
+without comparing against a repository.
 
 ## Options
 
 | Option | Default | Meaning |
 |---|---|---|
-| `dataset` | — | Preset name from the config file (`wcofs-fields-nowcast`, `ciofs-fields-nowcast`, `wcofs-regulargrid-nowcast`, `ciofs-regulargrid-nowcast`) |
+| `dataset` | — | Preset name from the config file (`wcofs-fields-nowcast`, `ciofs-fields-nowcast`, `wcofs-regulargrid-nowcast`, `ciofs-regulargrid-nowcast`, `wcofs-regulargrid-best`, `ciofs-regulargrid-best`) |
 | `--config` | `datasets.yml` next to the script | YAML file of dataset presets |
 | `--repo` | — | Local directory, or `s3://bucket/prefix` (settings from `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL`; see [Local S3](#local-s3-versitygw)). Required unless `--dry-run` |
-| `--start`, `--end` | — | Valid-time range, UTC, inclusive: `YYYY-MM-DD` or `YYYY-MM-DDTHH[:MM[:SS]]`. A date-only `--end` includes its whole day |
+| `--start`, `--end` | — | Valid-time range, UTC, inclusive: `YYYY-MM-DD`, `YYYY-MM-DDTHH[:MM[:SS]]`, or `today` / `today-N`. A date-only `--end` includes its whole day. `--end` may be omitted for [best time series](#best-time-series-nowcast--forecast) presets (everything published) |
 | `--folder-margin-days` | 1 (or preset) | Day folders listed beyond each end of the range, for data filed under a neighbouring day |
 | `--batch-size` | 64 | Files per commit. A failed run resumes from the last commit |
 | `--workers` | 8 | Processes opening source files in parallel |
 | `--dry-run` | off | List the files and exit |
 | `--no-validate` | off | Skip the final read-back check |
 | `--force` | off | Re-ingest files whose time steps are already in the store, replacing their references in place instead of skipping them. New files in the range are still appended |
+| `--retain` | `3d` | After a build that committed, expire snapshots older than this (`3d`, `12h`, `30m`, `0`) and garbage-collect what only they used |
+| `--no-gc` | off | Keep all snapshots and data |
 | `--no-catalog` | off | Don't update the gridlook/Xreds catalogs after the build (see [Catalogs](#catalogs)) |
 | `--scan-catalogs ROOT` | — | Only rebuild both catalogs from every repository under `ROOT`, then exit |
 | `--public-base-url` | see [Catalogs](#catalogs) | Browser URL of the repository root, used for gridlook entries |
@@ -118,7 +170,8 @@ or put it in your own file and pass `--config path/to/file.yml`:
 | `http_base` | `https://noaa-nos-ofs-pds.s3.amazonaws.com/` | Public HTTPS base embedded in the references; ends in `/` |
 | `key_root` | `wcofs/netcdf/` | Dataset prefix inside the bucket; ends in `/` |
 | `key_template` | `%Y/%m/%d/` | Per-day folder under `key_root` (`strftime` format) |
-| `file_regex` | `^wcofs\.t\d{2}z\.\d{8}\.fields\.n\d{3}\.nc$` | Which file names in a folder belong to the stream |
+| `file_regex` | `^wcofs\.t\d{2}z\.\d{8}\.fields\.n\d{3}\.nc$` | Which file names in a folder belong to the stream (one step per file). Either this or `sources` |
+| `sources` | (`*-best`: nowcast, forecast) | [Best time series](#best-time-series-nowcast--forecast) over ranked streams, most preferred first: a list of `{kind, file_regex, lead_offset_hours}`. Each `file_regex` has the named groups `date` (YYYYMMDD) and `hour` (HH) of the cycle and `lead` (hours); valid time = cycle + lead + `lead_offset_hours` (default 0, e.g. `-24` for WCOFS nowcasts) |
 | `concat_dim` | `ocean_time` | Dimension the files are appended along |
 | `loadable` | `[ocean_time]` | Small variables to materialize; must include `concat_dim` |
 | `time_chunk` | 4096 | Chunk length of the materialized time coordinate |

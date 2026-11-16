@@ -46,6 +46,11 @@ Examples
     ./virtualize.py wcofs-regulargrid-nowcast --repo s3://icechunk/wcofs-rg.icechunk \\
         --start 2026-11-01 --end 2026-11-07
 
+    # Best time series: nowcast, then the newest forecast. Re-run e.g. hourly;
+    # steps are upgraded as better files appear, otherwise nothing happens
+    ./virtualize.py wcofs-regulargrid-best --repo s3://icechunk/wcofs-rg-best.icechunk \\
+        --start today-1
+
     # Rebuild the gridlook/Xreds catalogs from every repository in a root, then exit
     ./virtualize.py --scan-catalogs s3://icechunk
 
@@ -64,6 +69,12 @@ source. If they fail with connect timeouts, lower --source-concurrency (e.g.
 8..16) or set source_concurrency in the preset; see also --source-* timeouts
 and retries. Each batch is committed, so a smaller --batch-size loses less
 work on a failure, and re-running resumes (indexed files are skipped).
+
+Snapshots: after a build that committed, snapshots older than --retain
+(default 3d) are expired and the data only they used is deleted (--no-gc to
+keep everything). Plain presets then lose the record of which files expired
+commits indexed, so re-running an old window reopens those files (metadata
+only) and skips them by their valid times.
 
 Adding another dataset: add an entry to datasets.yml (next to this script, or
 pass --config to use another file), or override any field of
@@ -118,6 +129,18 @@ log = logging.getLogger("virtualize")
 # the Dataset dataclass below is its schema (field names, types, defaults).
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
+class Source:
+    """One ranked stream of a "best time series" dataset (see Dataset.sources).
+    file_regex must have the named groups date (YYYYMMDD) and hour (HH) of the
+    model cycle, and lead (hours); a file is valid at
+    cycle + lead + lead_offset_hours (e.g. -24 for WCOFS nowcasts n003..n024,
+    which end at the cycle time)."""
+    kind: str  # e.g. "nowcast", "forecast"
+    file_regex: str
+    lead_offset_hours: int = 0
+
+
+@dataclass(frozen=True)
 class Dataset:
     # Source: anonymous public object storage. Listing uses the bucket URL;
     # references embed the public HTTPS URL, which any reader can use.
@@ -125,8 +148,17 @@ class Dataset:
     http_base: str  # e.g. "https://noaa-nos-ofs-pds.s3.amazonaws.com/" (references)
     key_root: str  # prefix inside the bucket that holds the dataset, ends in "/"
     key_template: str  # per-day folder under key_root; strftime fields from the date
-    file_regex: str  # which files in a day folder belong to this stream
     concat_dim: str  # dimension the files are appended along
+    # Which files in a day folder belong to this stream (one file = one step;
+    # valid times are read from the files). Either this or `sources`.
+    file_regex: str = ""
+    # A "best time series" over several ranked streams, most preferred first
+    # (e.g. nowcast, then forecast). Cycle, lead and valid time come from the
+    # file names; each valid time is filled from the best file available, and
+    # later runs replace a step whenever a better file appears: an earlier
+    # source wins, then a later cycle. Each step's source is recorded in the
+    # coordinates source_kind and forecast_reference_time.
+    sources: tuple[Source, ...] = ()
     # Variables to materialize (small ones only!). The concat coordinate must be
     # included. Everything else stays a virtual reference.
     loadable: tuple[str, ...] = ()
@@ -174,6 +206,31 @@ SOURCE_FIELDS = ("source_concurrency", "source_connect_timeout", "source_timeout
                  "source_http_retries", "source_read_retries")
 
 
+def parse_sources(raw, where: str) -> tuple[Source, ...]:
+    if not isinstance(raw, list) or not raw:
+        raise SystemExit(f"{where}: sources must be a non-empty list")
+    out = []
+    for i, src in enumerate(raw):
+        if not isinstance(src, dict) or set(src) - {"kind", "file_regex", "lead_offset_hours"} \
+                or not {"kind", "file_regex"} <= set(src):
+            raise SystemExit(f"{where}: sources[{i}] must be a mapping with kind, file_regex "
+                             "and optionally lead_offset_hours")
+        try:
+            groups = set(re.compile(src["file_regex"]).groupindex)
+        except re.error as e:
+            raise SystemExit(f"{where}: sources[{i}].file_regex: {e}")
+        if not {"date", "hour", "lead"} <= groups:
+            raise SystemExit(f"{where}: sources[{i}].file_regex needs the named groups "
+                             "(?P<date>...), (?P<hour>...) and (?P<lead>...)")
+        offset = src.get("lead_offset_hours", 0)
+        if isinstance(offset, bool) or not isinstance(offset, int):
+            raise SystemExit(f"{where}: sources[{i}].lead_offset_hours must be an integer")
+        out.append(Source(str(src["kind"]), src["file_regex"], offset))
+    if len({s.kind for s in out}) != len(out):
+        raise SystemExit(f"{where}: sources: kinds must be unique")
+    return tuple(out)
+
+
 def load_datasets(path: Path = DATASETS_FILE) -> dict[str, Dataset]:
     """Read dataset presets from YAML: {name: {Dataset field: value, ...}}."""
     raw = yaml.safe_load(path.read_text()) or {}
@@ -192,6 +249,12 @@ def load_datasets(path: Path = DATASETS_FILE) -> dict[str, Dataset]:
                 fields[key] = {str(k): str(v) for k, v in fields[key].items()}
         if fields.get("rectilinear") and set(fields["rectilinear"]) != {"lat", "lon"}:
             raise SystemExit(f"{path}: dataset {name!r}: rectilinear needs exactly the keys lat and lon")
+        if fields.get("file_regex") is None:  # null: unset an inherited (<<: *anchor) regex
+            fields.pop("file_regex", None)
+        if "sources" in fields:
+            fields["sources"] = parse_sources(fields["sources"], f"{path}: dataset {name!r}")
+        if bool(fields.get("file_regex")) == bool(fields.get("sources")):
+            raise SystemExit(f"{path}: dataset {name!r}: set exactly one of file_regex and sources")
         for key in SOURCE_FIELDS:
             if key in fields and (isinstance(fields[key], bool) or not isinstance(fields[key], int)
                                   or fields[key] < (0 if key == "source_read_retries" else 1)):
@@ -249,9 +312,18 @@ class TimeArg:
         return self.when.date().isoformat() if self.date_only else self.when.isoformat()
 
 
+def utc_today() -> dt.date:
+    return dt.datetime.now(dt.timezone.utc).date()
+
+
 def parse_time(s: str) -> TimeArg:
     """YYYY-MM-DD or an ISO datetime (YYYY-MM-DDTHH[:MM[:SS]], 'T' or space),
-    always UTC. A Z/+00:00 suffix is allowed; other offsets are refused."""
+    always UTC. A Z/+00:00 suffix is allowed; other offsets are refused.
+    'today' or 'today-N' is a whole day, N days before today (UTC)."""
+    m = re.fullmatch(r"today(?:-(\d+))?", s)
+    if m:
+        day = utc_today() - dt.timedelta(days=int(m.group(1) or 0))
+        return TimeArg(dt.datetime.combine(day, dt.time()), True)
     try:
         return TimeArg(dt.datetime.combine(dt.date.fromisoformat(s), dt.time()), True)
     except ValueError:
@@ -268,48 +340,103 @@ def parse_time(s: str) -> TimeArg:
     return TimeArg(t, False)
 
 
-def time_bounds(start: TimeArg, end: TimeArg) -> tuple[np.datetime64, np.datetime64, bool]:
+def time_bounds(start: TimeArg, end: TimeArg | None) -> tuple[np.datetime64, np.datetime64 | None, bool]:
     """(lower, upper, upper_inclusive). A date-only end covers its whole day,
-    i.e. up to but not including 00:00 of the next day."""
+    i.e. up to but not including 00:00 of the next day. No end: no upper bound."""
     lo = np.datetime64(start.when, "ns")
+    if end is None:
+        return lo, None, True
     if end.date_only:
         return lo, np.datetime64(end.when + dt.timedelta(days=1), "ns"), False
     return lo, np.datetime64(end.when, "ns"), True
 
 
-def in_range(times: np.ndarray, start: TimeArg, end: TimeArg) -> np.ndarray:
+def in_range(times: np.ndarray, start: TimeArg, end: TimeArg | None) -> np.ndarray:
     """Which of `times` (datetime64) fall in start..end, both inclusive."""
     lo, hi, incl = time_bounds(start, end)
+    if hi is None:
+        return times >= lo
     return (times >= lo) & ((times <= hi) if incl else (times < hi))
 
 
-def discover(ds: Dataset, start: TimeArg, end: TimeArg) -> list[str]:
-    """Return the sorted public HTTPS URLs of all files in the day folders that
-    can hold data of start..end (the range plus folder_margin_days each side).
-    The files still have to be filtered by their valid time (in_range)."""
+@dataclass(frozen=True)
+class Candidate:
+    """A source file. For a `sources` dataset, its stream, cycle and valid time
+    come from its name; for a plain one they are unknown until it is opened."""
+    url: str
+    source: int = -1  # index into Dataset.sources; -1: plain file_regex dataset
+    cycle: np.datetime64 | None = None
+    valid: np.datetime64 | None = None
+
+    @property
+    def rank(self) -> tuple[int, int]:
+        """Lower is better: an earlier source, then a later cycle."""
+        return rank_of(self.source, self.cycle)
+
+    @property
+    def name(self) -> str:
+        return self.url.rsplit("/", 1)[-1]
+
+
+def rank_of(source: int, cycle: np.datetime64) -> tuple[int, int]:
+    return int(source), -int(np.datetime64(cycle, "s").astype("int64"))
+
+
+def classify(ds: Dataset, url: str, name: str) -> Candidate | None:
+    """Candidate for a file name, or None if no stream of `ds` matches it."""
+    if not ds.sources:
+        return Candidate(url) if re.match(ds.file_regex, name) else None
+    for i, src in enumerate(ds.sources):
+        m = re.match(src.file_regex, name)
+        if m:
+            try:
+                cycle = dt.datetime.strptime(m["date"] + m["hour"], "%Y%m%d%H")
+            except ValueError:
+                raise SystemExit(f"{name}: date/hour groups of the {src.kind} file_regex are not "
+                                 "YYYYMMDD and HH")
+            valid = cycle + dt.timedelta(hours=int(m["lead"]) + src.lead_offset_hours)
+            return Candidate(url, i, np.datetime64(cycle, "ns"), np.datetime64(valid, "ns"))
+    return None
+
+
+def discover(ds: Dataset, start: TimeArg, end: TimeArg | None) -> list[Candidate]:
+    """Return all files (sorted by URL) in the day folders that can hold data of
+    start..end: the range plus folder_margin_days each side; without an end,
+    through today (UTC). Plain datasets' files still have to be filtered by the
+    valid time read from them (in_range); `sources` datasets' are filtered here."""
     store = source_store(ds, bucket=True)
-    pattern = re.compile(ds.file_regex)
-    urls: list[str] = []
+    out: list[Candidate] = []
     empty_days: list[str] = []
     margin = dt.timedelta(days=ds.folder_margin_days)
-    core = (start.when.date(), end.when.date())
+    today = utc_today()
+    core = (start.when.date(), end.when.date() if end else today)
     day, last = core[0] - margin, core[1] + margin
     while day <= last:
         prefix = ds.key_root + day.strftime(ds.key_template)
-        found = [
-            o["path"]
-            for batch in store.list(prefix=prefix)
-            for o in batch
-            if pattern.match(o["path"].rsplit("/", 1)[-1])
-        ]
-        if not found and core[0] <= day <= core[1]:  # margin folders may not exist yet
+        found = [c for batch in store.list(prefix=prefix) for o in batch
+                 if (c := classify(ds, ds.http_base + o["path"], o["path"].rsplit("/", 1)[-1]))]
+        # Margin folders, and folders of days to come (or today's, before its
+        # first cycle when there is no --end), may not exist yet.
+        if not found and core[0] <= day <= core[1] and (day < today if end is None else day <= today):
             empty_days.append(day.isoformat())
-        urls += [ds.http_base + p for p in found]
+        out += found
         day += dt.timedelta(days=1)
     if empty_days:
         # A build that quietly drops days is worse than one that says so.
         log.warning("no matching files for %d day(s): %s", len(empty_days), ", ".join(empty_days))
-    return sorted(urls)
+    if ds.sources:
+        valid = np.array([c.valid for c in out], dtype="datetime64[ns]")
+        out = [c for c, k in zip(out, in_range(valid, start, end)) if k]
+    return sorted(out, key=lambda c: c.url)
+
+
+def select_best(cands: list[Candidate]) -> list[Candidate]:
+    """The best file for each valid time, in valid-time order."""
+    best: dict[np.datetime64, Candidate] = {}
+    for c in cands:
+        if c.valid not in best or c.rank < best[c.valid].rank:
+            best[c.valid] = c
+    return [best[t] for t in sorted(best)]
 
 
 def _open_one(args: tuple[str, str, tuple[str, ...]]) -> xr.Dataset:
@@ -583,6 +710,68 @@ def combine(vds_list: list[xr.Dataset], ds: Dataset) -> xr.Dataset:
     return repair_metadata(vds, ds.concat_dim, ds.drop_global_attrs, ds.coord_aliases)
 
 
+# --------------------------------------------------------------------------- #
+# Best time series (`sources` datasets): which file fills each step, and when a
+# newly available file should replace it.
+# --------------------------------------------------------------------------- #
+PROVENANCE = ("source_kind", "forecast_reference_time")
+
+
+def kinds_of(ds: Dataset) -> str:
+    return " ".join(src.kind for src in ds.sources)
+
+
+def tag_provenance(vds: xr.Dataset, cand: Candidate, ds: Dataset) -> xr.Dataset:
+    """Record the file's stream and cycle as (materialized) coordinates."""
+    dim, n = ds.concat_dim, vds.sizes[ds.concat_dim]
+    return vds.assign_coords(
+        source_kind=(dim, np.full(n, cand.source, dtype="i1"), {
+            "long_name": "source stream of each step (lower is preferred)",
+            "flag_values": list(range(len(ds.sources))), "flag_meanings": kinds_of(ds)}),
+        forecast_reference_time=(dim, np.full(n, cand.cycle, dtype="datetime64[ns]"), {
+            "standard_name": "forecast_reference_time",
+            "long_name": "model cycle that produced each step"}),
+    )
+
+
+def plan_best(best: list[Candidate], committed: xr.Dataset | None, have: np.ndarray,
+              ds: Dataset, force: bool) -> tuple[list[Candidate], dict]:
+    """Of the best files per valid time, those that need work: valid times not
+    in the store yet (append), and ones the store holds from a worse file
+    (replace; all of them with --force). Also returns {valid time: (source,
+    cycle)} of the stored steps."""
+    stored: dict = {}
+    if committed is not None:
+        if not set(PROVENANCE) <= set(committed.variables):
+            raise SystemExit("this repository does not record source_kind/forecast_reference_time; "
+                             "it was not built from `sources` (use a plain preset, or a new repository)")
+        stored_kinds = committed["source_kind"].attrs.get("flag_meanings")
+        if stored_kinds != kinds_of(ds):
+            raise SystemExit(f"this repository ranks the sources {stored_kinds!r}, the preset "
+                             f"{kinds_of(ds)!r}; the order must not change")
+        stored = dict(zip(have, zip(committed["source_kind"].values,
+                                    committed["forecast_reference_time"].values)))
+    todo: list[Candidate] = []
+    new, better, kept = [], [], []  # valid times of each category
+    for c in best:
+        old = stored.get(c.valid)
+        if old is None:
+            new.append(c.valid)
+        elif force or c.rank < rank_of(*old):
+            better.append(c.valid)
+        else:
+            kept.append(c.valid)
+            continue
+        todo.append(c)
+
+    def span(t: list) -> str:
+        return f" ({_short_times(np.array(t))})" if t else ""
+    log.info("best files: %d new step(s)%s, %d to %s%s, %d already best%s",
+             len(new), span(new), len(better), "re-ingest (--force)" if force else "upgrade",
+             span(better), len(kept), span(kept))
+    return todo, stored
+
+
 def replace_steps(session: ic.Session, vds: xr.Dataset, dim: str, start: int) -> None:
     """Overwrite steps start..start+len of every time-dependent array with vds.
     The concat coordinate itself is not rewritten: the steps were matched by
@@ -760,9 +949,26 @@ def _first_write_encoding(plan, level: int, lvl0: xr.Dataset, variables: list[st
     return enc
 
 
+@dataclass
+class Progress:
+    """Steps of this run that go through the overviews, for the log. `total`
+    starts as the number of files queued and shrinks as files turn out to be
+    outside the range or already indexed (plain presets only learn their valid
+    times on opening; for `sources` presets it is exact from the start)."""
+    total: int
+    done: int = 0
+
+
+def _short_times(t: np.ndarray) -> str:
+    """'2026-11-15T06:00' or '2026-11-15T06:00 .. 2026-11-15T12:00'."""
+    first, last = str(t[0])[:16], str(t[-1])[:16]
+    return first if first == last else f"{first} .. {last}"
+
+
 def update_overviews(session: ic.Session, vds: xr.Dataset, ov: Overviews, dim: str,
                      start: int, *, create: bool = False, replace: bool = False,
-                     time_chunk: int = 4096, read_retries: int = 5) -> None:
+                     time_chunk: int = 4096, read_retries: int = 5,
+                     progress: Progress | None = None) -> None:
     """Write the time steps of `vds` (positions start.. in the root arrays) to the
     overview pyramid: references to multiscale/0, coarsened data to 1..N.
     create: first write of the repository; replace: rewrite existing steps (--force)."""
@@ -802,6 +1008,7 @@ def update_overviews(session: ic.Session, vds: xr.Dataset, ov: Overviews, dim: s
     exists = [not create] * levels
     other_coords = {c: lvl0[c] for c in lvl0.coords if c not in (dim, "lat", "lon") and dim not in lvl0[c].dims}
     for p0 in range(start, start + n, per_pass):
+        t_pass = time.time()
         p1 = min(start + n, p0 + per_pass)
         data: list[dict[str, np.ndarray]] = [{} for _ in range(levels)]
         for v in variables:
@@ -834,9 +1041,18 @@ def update_overviews(session: ic.Session, vds: xr.Dataset, ov: Overviews, dim: s
             # to_zarr replaces a group's attributes; restore the level's proj:/spatial:.
             zarr.open_group(store, path=group, mode="r+").attrs.update(_level_group_attrs(store, k))
         del data
-        log.info("overviews: %s steps %d..%d of %s -> levels 1..%d",
-                 "rewrote" if replace else "wrote", p0, p1 - 1, ",".join(variables), levels - 1)
-    log.info("overviews: %d step(s) in %.0fs", n, time.time() - t_start)
+        if progress is not None:  # 1-based position in this run
+            k0, k1 = progress.done + p0 - start + 1, progress.done + p1 - start
+            steps = f"{k0}..{k1}/{progress.total}" if k1 > k0 else f"{k0}/{progress.total}"
+        else:
+            steps = f"{p0}..{p1 - 1}"
+        log.info("overviews: %s step%s %s (%s) of %s -> levels 1..%d, %.0fs",
+                 "rewrote" if replace else "wrote", "s" if p1 - p0 > 1 else "", steps,
+                 _short_times(times.values), ",".join(variables), levels - 1, time.time() - t_pass)
+    if progress is not None:
+        progress.done += n
+    if n > per_pass:
+        log.info("overviews: %d step(s) in %.0fs", n, time.time() - t_start)
 
 
 def validate_overviews(store, dim: str, root_times: np.ndarray, read_retries: int = 5) -> None:
@@ -871,11 +1087,24 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
     dim = ds.concat_dim
     zarr.config.set({"async.concurrency": ds.source_concurrency})
 
-    urls = discover(ds, args.start, args.end)
+    cands = discover(ds, args.start, args.end)
     log.info("discovered %d candidate files for %s .. %s (±%d day(s) of folders)",
-             len(urls), args.start, args.end, ds.folder_margin_days)
-    if not urls:
+             len(cands), args.start, args.end or "open end", ds.folder_margin_days)
+    if not cands:
         raise SystemExit("nothing to index")
+    urls = [c.url for c in cands]
+    best: list[Candidate] = []
+    if ds.sources:
+        best = select_best(cands)
+        counts = {src.kind: sum(c.source == i for c in best) for i, src in enumerate(ds.sources)}
+        log.info("%d valid time(s), %s; best files: %s", len(best),
+                 _short_times(np.array([best[0].valid, best[-1].valid])),
+                 ", ".join(f"{n} {k}" for k, n in counts.items()))
+    if args.dry_run and ds.sources:
+        # Valid times come from the names; nothing needs opening.
+        for c in best:
+            print(f"{c.url}\t{c.valid}\t{ds.sources[c.source].kind}\tcycle {c.cycle}")
+        return
     if args.dry_run:
         # Valid times are only known from the files themselves.
         n = 0
@@ -911,18 +1140,32 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
         log.info("overviews: %s levels (%s), variables: %s", ov.levels, ov.method,
                  ", ".join(ov.variables) or "all over (time, lat, lon)")
 
-    if not args.force:
+    stored: dict = {}
+    if ds.sources:
+        todo, stored = plan_best(best, committed, have, ds, args.force)
+        urls = [c.url for c in todo]  # in valid-time order
+        by_url = {c.url: c for c in todo}
+    elif not args.force:
         already = indexed_files(repo, ds)
         pending = [u for u in urls if u not in already]
         if len(pending) < len(urls):
             log.info("skipping %d file(s) recorded as already indexed", len(urls) - len(pending))
         urls = pending
 
-    total_new = total_replaced = in_window = 0
+    total_new = total_replaced = in_window = commits = 0
+    progress = Progress(total=len(urls))
     for i in range(0, len(urls), args.batch_size):
         batch_urls = urls[i : i + args.batch_size]
         vds_list = open_files(ds, batch_urls, args.workers)
         times = np.array([v[dim].values[0] for v in vds_list], dtype="datetime64[ns]")
+        if ds.sources:
+            cs = [by_url[u] for u in batch_urls]
+            for c, t in zip(cs, times):
+                if t != c.valid:
+                    raise SystemExit(
+                        f"{c.name} holds {t}, but its name says {c.valid}; check the "
+                        f"{ds.sources[c.source].kind} source's file_regex/lead_offset_hours")
+            vds_list = [tag_provenance(v, c, ds) for v, c in zip(vds_list, cs)]
 
         # Margin folders hold files outside the requested time range; drop them.
         inside = in_range(times, args.start, args.end)
@@ -932,6 +1175,7 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
         vds_list = [v for v, k in zip(vds_list, inside) if k]
         batch_urls = [u for u, k in zip(batch_urls, inside) if k]
         times = times[inside]
+        progress.total -= int((~inside).sum())
         in_window += len(vds_list)
         if not vds_list:
             continue
@@ -939,12 +1183,14 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
         # Reconcile against committed state: files whose valid time is already in
         # the store were indexed by an earlier run. Skip them, unless --force,
         # in which case their references are rewritten in place below.
-        keep = ~np.isin(times, have) | args.force
+        # (`sources` datasets: plan_best already chose what needs work.)
+        keep = ~np.isin(times, have) | args.force | bool(ds.sources)
         if not keep.all():
             log.info("batch %d: skipping %d already-indexed file(s)", i // args.batch_size, int((~keep).sum()))
         vds_list = [v for v, k in zip(vds_list, keep) if k]
         batch_urls = [u for u, k in zip(batch_urls, keep) if k]
         times = times[keep]
+        progress.total -= int((~keep).sum())
         if not vds_list:
             continue
 
@@ -982,7 +1228,7 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
                 replace_steps(session, part, dim, start=int(idx[run[0]]))
                 if ov:
                     update_overviews(session, part, ov, dim, int(idx[run[0]]), replace=True,
-                                     read_retries=ds.source_read_retries)
+                                     read_retries=ds.source_read_retries, progress=progress)
             log.info("batch %d: replacing %d already-indexed step(s)", i // args.batch_size, int(replace.sum()))
         if new.any():
             vds = combine([v for v, n in zip(vds_list, new) if n], ds)
@@ -994,10 +1240,14 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
                 # source chunking; nothing here can change that.)
                 vds[dim].encoding["chunks"] = (ds.time_chunk,)
                 vds[dim].encoding.pop("preferred_chunks", None)
+                if ds.sources:
+                    vds["source_kind"].encoding["chunks"] = (ds.time_chunk,)
+                    vds["forecast_reference_time"].encoding.update(
+                        chunks=(ds.time_chunk,), units="seconds since 1970-01-01T00:00:00", dtype="int64")
                 vds.vz.to_icechunk(session.store)
                 if ov:
                     update_overviews(session, vds, ov, dim, 0, create=True, time_chunk=ds.time_chunk,
-                                     read_retries=ds.source_read_retries)
+                                     read_retries=ds.source_read_retries, progress=progress)
             else:
                 static = [n for n, v in vds.variables.items() if dim not in v.dims]
                 appended = vds.drop_vars(static)
@@ -1005,9 +1255,16 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
                 appended.vz.to_icechunk(session.store, append_dim=dim)
                 if ov:
                     update_overviews(session, vds, ov, dim, int(have.size), time_chunk=ds.time_chunk,
-                                     read_retries=ds.source_read_retries)
+                                     read_retries=ds.source_read_retries, progress=progress)
         n_new, n_replaced = int(new.sum()), int(replace.sum())
         verb = "index" if not n_replaced else "re-index" if not n_new else "index/re-index"
+        upgraded = []
+        if ds.sources:  # what each replaced step held before
+            for u, t, r in zip(batch_urls, times, replace):
+                if r:
+                    kind, cycle = stored[t]
+                    upgraded.append({"file": u.removeprefix(ds.url_prefix),
+                                     "from_kind": ds.sources[int(kind)].kind, "from_cycle": str(cycle)})
         snapshot = session.commit(
             f"{verb} {len(vds_list)} files: {batch_urls[0].rsplit('/', 1)[-1]} .. {batch_urls[-1].rsplit('/', 1)[-1]}",
             metadata={
@@ -1017,10 +1274,12 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
                 "first_time": str(times[0]),
                 "last_time": str(times[-1]),
                 "overviews": ov.levels if ov else None,
+                **({"upgraded": upgraded} if ds.sources else {}),
                 "versions": versions(),
             },
         )  # a committed session is read-only; the next batch opens a fresh one
         have = np.concatenate([have, times[new]])
+        commits += 1
         total_new += n_new
         total_replaced += n_replaced
         log.info("committed %s: +%d new, %d replaced step(s) (%s .. %s)",
@@ -1028,13 +1287,45 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
 
     if urls and not in_window:
         log.warning("none of the opened files is valid in %s .. %s", args.start, args.end)
+    if not urls:
+        log.info("up to date: nothing to index or upgrade")
     log.info("done: %d new, %d replaced step(s), %d total", total_new, total_replaced, have.size)
+    if commits and args.retain is not None:
+        expire_and_gc(repo, args.retain)
     if not args.no_validate:
         validate(storage, ds, expected_steps=have.size, expected_last=have[-1] if have.size else None)
     if not args.no_catalog:
         root, repo_name = split_repo(args.repo)
         target = catalog_target(root, args.public_base_url, args.xreds_base_url, args.xreds_endpoint_url)
         upsert_catalogs(target, repo_name, storage)
+
+
+def parse_duration(s: str) -> dt.timedelta:
+    """'3d', '12h', '30m' or '0'."""
+    m = re.fullmatch(r"(\d+)\s*([dhm]?)", s.strip())
+    if not m or (not m.group(2) and m.group(1) != "0"):
+        raise argparse.ArgumentTypeError(f"invalid duration {s!r}; use e.g. 3d, 12h, 30m or 0")
+    unit = {"d": "days", "h": "hours", "m": "minutes", "": "days"}[m.group(2)]
+    return dt.timedelta(**{unit: int(m.group(1))})
+
+
+def expire_and_gc(repo: ic.Repository, retain: dt.timedelta) -> None:
+    """Drop snapshots older than `retain` from history (main's tip is always
+    kept) and delete the chunks, manifests, ... that only they used. Replacing
+    steps (forecast upgrades, --force) otherwise keeps every superseded overview
+    chunk forever. The cutoff is now, after this run's commits, so nothing this
+    run wrote is at risk; with a retention of 0, no other writer may be
+    committing to the repository at the same time."""
+    t0 = time.time()
+    cutoff = dt.datetime.now(dt.timezone.utc) - retain
+    expired = repo.expire_snapshots(older_than=cutoff)
+    gc = repo.garbage_collect(delete_object_older_than=cutoff)
+    log.info("gc: expired %d snapshot(s) older than %s; deleted %d chunk(s) (%.1f MB), %d manifest(s), "
+             "%d snapshot file(s) in %.1fs", len(expired), cutoff.isoformat(timespec="seconds"),
+             gc.chunks_deleted, gc.bytes_deleted / 1e6, gc.manifests_deleted, gc.snapshots_deleted,
+             time.time() - t0)
+    if gc.objects_failed_to_delete:
+        log.warning("gc: %d object(s) could not be deleted", gc.objects_failed_to_delete)
 
 
 def validate(storage: ic.Storage, ds: Dataset, expected_steps: int, expected_last) -> None:
@@ -1058,6 +1349,15 @@ def validate(storage: ic.Storage, ds: Dataset, expected_steps: int, expected_las
         t.size, t[0], t[-1], var, tuple(sample.shape), sample.dtype,
         int(np.isfinite(sample.values).sum()), sample.size,
     )
+    if ds.sources:
+        for c in PROVENANCE:
+            assert c in out.coords and out[c].dims == (ds.concat_dim,), f"{c} missing or not over {ds.concat_dim}"
+        kind = out["source_kind"].values
+        if (np.diff(kind.astype(int)) < 0).any():  # e.g. a missing nowcast cycle, later filled
+            log.warning("validated: a %s step comes after a better one; some steps await an upgrade",
+                        ds.sources[int(kind.max())].kind)
+        log.info("validated provenance: %s", ", ".join(
+            f"{src.kind} {int((kind == i).sum())} step(s)" for i, src in enumerate(ds.sources)))
     if stored_overviews(repo, ds.concat_dim) is not None:
         validate_overviews(store, ds.concat_dim, t, ds.source_read_retries)
 
@@ -1184,6 +1484,7 @@ def describe_repo(storage: ic.Storage) -> dict | None:
     # Time range from the materialized time coordinate (axis T / standard_name time).
     t0 = t1 = None
     steps = 0
+    by_kind: dict[str, str] = {}  # `sources` stores: last valid time of each stream
     for name, arr in arrays.items():
         a = arr.attrs
         if arr.ndim == 1 and (a.get("axis") == "T" or a.get("standard_name") == "time"):
@@ -1193,13 +1494,17 @@ def describe_repo(storage: ic.Storage) -> dict | None:
             t = xr.decode_cf(xr.Dataset({"t": var}))["t"].values
             if t.size:
                 steps, t0, t1 = t.size, str(t[0])[:16], str(t[-1])[:16]
+                if "source_kind" in arrays and arrays["source_kind"].shape == t.shape:
+                    kind = arrays["source_kind"][:]
+                    names = str(arrays["source_kind"].attrs.get("flag_meanings", "")).split()
+                    by_kind = {k: str(t[kind == i][-1])[:16] for i, k in enumerate(names) if (kind == i).any()}
             break
     try:
         layout = group[OVERVIEW_GROUP].attrs.get("multiscales", {}).get("layout", [])
     except KeyError:
         layout = []
     return {"attrs": attrs, "prefix": attrs.get("virtualized_source") or (prefixes[0] if prefixes else None),
-            "steps": steps, "first": t0, "last": t1, "variables": variables, "dims": dims,
+            "steps": steps, "first": t0, "last": t1, "by_kind": by_kind, "variables": variables, "dims": dims,
             "overview_levels": len(layout)}
 
 
@@ -1231,6 +1536,8 @@ def catalog_entries(target: CatalogTarget, name: str, info: dict) -> tuple[dict,
     parts = [str(attrs["title"]).strip()] if attrs.get("title") else []
     if info["first"]:
         parts.append(f"{info['steps']} time steps, {info['first']} to {info['last']}")
+    if info.get("by_kind"):
+        parts.append("best time series: " + ", ".join(f"{k} to {t}" for k, t in info["by_kind"].items()))
     if info["prefix"]:
         parts.append(f"Virtual Icechunk store over {info['prefix']}")
     gridlook = {"title": source, "url": target.public_base + name, "description": ". ".join(parts),
@@ -1255,6 +1562,9 @@ def catalog_entries(target: CatalogTarget, name: str, info: dict) -> tuple[dict,
     # Xreds' roms extension (rotated currents) and, like upstream's ROMS
     # examples, drops dstart (a run-start scalar, not data).
     drop = coord_aliases_in(info)
+    # Best-time-series provenance: cf_xarray's guess_coord_axis() would take
+    # forecast_reference_time for a second T axis; WMS/EDR has no use for either.
+    drop += [c for c in PROVENANCE if c in info["variables"]]
     roms = is_roms(info)
     if roms and "dstart" in info["variables"]:
         drop.append("dstart")
@@ -1367,10 +1677,12 @@ def main() -> None:
     p.add_argument("dataset", choices=sorted(datasets), help=f"dataset preset from {config_path.name}")
     p.add_argument("--repo", help="repository: local directory or s3://bucket/prefix")
     p.add_argument("--start", type=parse_time, required=True,
-                   help="first valid time, inclusive: YYYY-MM-DD or YYYY-MM-DDTHH[:MM[:SS]], UTC")
-    p.add_argument("--end", type=parse_time, required=True,
+                   help="first valid time, inclusive: YYYY-MM-DD or YYYY-MM-DDTHH[:MM[:SS]], UTC; "
+                        "or today / today-N (whole days)")
+    p.add_argument("--end", type=parse_time,
                    help="last valid time, inclusive (UTC); a date alone means the whole day, "
-                        "up to 00:00 of the next")
+                        "up to 00:00 of the next. Optional for presets with `sources`: then "
+                        "everything published so far (e.g. the whole forecast)")
     p.add_argument("--batch-size", type=int, default=32, help="files per commit (default 32)")
     p.add_argument("--workers", type=int, default=8, help="parallel file-opening processes (default 8)")
     p.add_argument("--dry-run", action="store_true", help="list the files and exit")
@@ -1392,6 +1704,11 @@ def main() -> None:
     p.add_argument("--rectilinear",
                    help="regular grid given as 2-D arrays, 'lat=NAME,lon=NAME' ('' for none)")
     p.add_argument("--no-catalog", action="store_true", help="do not update the catalogs after the build")
+    p.add_argument("--retain", type=parse_duration, default=parse_duration("3d"), metavar="AGE",
+                   help="after a build that committed, expire snapshots older than AGE (e.g. 3d, 12h, "
+                        "0 = keep only the latest) and garbage-collect what only they used (default 3d)")
+    p.add_argument("--no-gc", dest="retain", action="store_const", const=None,
+                   help="keep all snapshots and data (no expiry or garbage collection)")
     srcg = p.add_argument_group(
         "source reads",
         "How overview builds and validation read the source (defaults, or the preset's source_* fields). "
@@ -1420,7 +1737,7 @@ def main() -> None:
     args = p.parse_args()
 
     lo, hi, incl = time_bounds(args.start, args.end)
-    if hi < lo or (hi == lo and not incl):
+    if hi is not None and (hi < lo or (hi == lo and not incl)):
         p.error("--end is before --start")
     if not args.dry_run and not args.repo:
         p.error("--repo is required unless --dry-run")
@@ -1437,7 +1754,11 @@ def main() -> None:
         "rectilinear": None if args.rectilinear is None else
             dict(pair.split("=", 1) for pair in args.rectilinear.split(",") if pair),
     } | {k: getattr(args, k) for k in SOURCE_FIELDS}).items() if v is not None}
+    if args.file_regex and datasets[args.dataset].sources:
+        p.error(f"{args.dataset} is defined by `sources`; --file-regex does not apply")
     ds = dataclasses.replace(datasets[args.dataset], **overrides)
+    if args.end is None and not ds.sources:
+        p.error("--end is required (it is optional only for presets with `sources`)")
     for k in SOURCE_FIELDS:
         if getattr(ds, k) < (0 if k == "source_read_retries" else 1):
             p.error(f"--{k.replace('_', '-')} must be positive")

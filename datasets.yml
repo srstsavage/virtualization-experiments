@@ -6,6 +6,19 @@
 #   key_root           dataset prefix inside the bucket; ends in "/"
 #   key_template       per-day folder under key_root (strftime format)
 #   file_regex         which file names in a day folder belong to this stream
+#                      (one step per file; valid times are read from the files)
+#   sources            instead of file_regex: a "best time series" over ranked
+#                      streams, most preferred first, e.g. nowcast then forecast:
+#                        - kind: nowcast
+#                          file_regex: '...(?P<date>\d{8})...(?P<hour>\d{2})...(?P<lead>\d{3})...'
+#                          lead_offset_hours: -24   # optional, default 0
+#                      The named groups give the model cycle (date YYYYMMDD,
+#                      hour HH) and lead (hours); valid time = cycle + lead +
+#                      lead_offset_hours. Each valid time gets the best file:
+#                      an earlier source wins, then a later cycle. Re-runs
+#                      replace steps when a better file has appeared (see
+#                      README, "Best time series"); source_kind and
+#                      forecast_reference_time record each step's file.
 #   concat_dim         dimension the files are appended along
 #   loadable           (optional) small variables to materialize; must include concat_dim
 #   time_chunk         (optional, default 4096) chunk length of the concat coordinate
@@ -35,8 +48,8 @@
 # WCOFS (West Coast Operational Forecast System), NOAA NOS, on the NOAA Open
 # Data Dissemination bucket. One cycle (t03z) per day. The nowcast files of
 # day D cover D-1 06:00 .. D 03:00 at 3-hourly steps, so consecutive days are
-# contiguous and never overlap. Forecast files (fNNN) overlap across days and
-# are deliberately NOT a preset: they need a run/lead-time dimension.
+# contiguous and never overlap. Forecast files (fNNN) overlap across days; they
+# are used only by the *-best presets, which keep one (the best) file per step.
 wcofs-fields-nowcast:
   bucket_url: s3://noaa-nos-ofs-pds
   http_base: https://noaa-nos-ofs-pds.s3.amazonaws.com/
@@ -65,7 +78,7 @@ wcofs-fields-nowcast:
 # nowcast files (n001..n006) covering the 6 hours up to the cycle time, so
 # consecutive cycles and days are contiguous. The %Y/%m/%d/ layout starts on
 # 2024-11-19; older files sit in flat YYYYMM/ folders this preset does not read.
-# Forecast files (fNNN) overlap across cycles and are not a preset, as for WCOFS.
+# Forecast files (fNNN) overlap across cycles; see the *-best presets.
 ciofs-fields-nowcast:
   bucket_url: s3://noaa-nos-ofs-pds
   http_base: https://noaa-nos-ofs-pds.s3.amazonaws.com/
@@ -94,7 +107,7 @@ ciofs-fields-nowcast:
 # multiscale overviews for web maps (see README, "Multiscale overviews").
 # Latitude/Longitude are 2-D in the files; `rectilinear` turns them into 1-D
 # lat/lon coordinates. Depth is materialized so viewers needn't fetch it from NOAA.
-wcofs-regulargrid-nowcast:
+wcofs-regulargrid-nowcast: &wcofs_regulargrid
   bucket_url: s3://noaa-nos-ofs-pds
   http_base: https://noaa-nos-ofs-pds.s3.amazonaws.com/
   key_root: wcofs/netcdf/
@@ -125,7 +138,7 @@ wcofs-regulargrid-nowcast:
     levels: 3
     method: mean
 
-ciofs-regulargrid-nowcast:
+ciofs-regulargrid-nowcast: &ciofs_regulargrid
   bucket_url: s3://noaa-nos-ofs-pds
   http_base: https://noaa-nos-ofs-pds.s3.amazonaws.com/
   key_root: ciofs/netcdf/
@@ -139,3 +152,30 @@ ciofs-regulargrid-nowcast:
     variables: [zeta, temp, salt, u_eastward, v_northward]
     levels: 3
     method: mean
+
+# Best time series of the same regulargrid files: nowcast up to the latest
+# cycle, then forecast (up to 72 h WCOFS, 48 h CIOFS). Each step holds the best
+# file published so far, nowcast > newer forecast > older forecast; re-running
+# (e.g. hourly: --start today-1, no --end) upgrades steps as new cycles appear
+# and does nothing otherwise. Valid time from the name: forecast fNNN = cycle +
+# NNN h; nowcast nNNN = cycle - (nowcast span) + NNN h, span 24 h for WCOFS
+# (n003..n024 end at the cycle time) and 6 h for CIOFS (n001..n006).
+wcofs-regulargrid-best:
+  <<: *wcofs_regulargrid
+  file_regex: null  # replaced by sources
+  sources:
+    - kind: nowcast
+      file_regex: '^wcofs\.t(?P<hour>\d{2})z\.(?P<date>\d{8})\.regulargrid\.n(?P<lead>\d{3})\.nc$'
+      lead_offset_hours: -24
+    - kind: forecast
+      file_regex: '^wcofs\.t(?P<hour>\d{2})z\.(?P<date>\d{8})\.regulargrid\.f(?P<lead>\d{3})\.nc$'
+
+ciofs-regulargrid-best:
+  <<: *ciofs_regulargrid
+  file_regex: null
+  sources:
+    - kind: nowcast
+      file_regex: '^ciofs\.t(?P<hour>\d{2})z\.(?P<date>\d{8})\.regulargrid\.n(?P<lead>\d{3})\.nc$'
+      lead_offset_hours: -6
+    - kind: forecast
+      file_regex: '^ciofs\.t(?P<hour>\d{2})z\.(?P<date>\d{8})\.regulargrid\.f(?P<lead>\d{3})\.nc$'
