@@ -4,7 +4,8 @@
   "description": "Web map of the multiscale overviews in virtualize.py repositories (zarr-layer + icechunk-js)",
   "type": "module",
   "scripts": {
-    "build": "esbuild main.js --bundle --format=esm --minify --sourcemap --outfile=dist/bundle.js && cp index.html node_modules/maplibre-gl/dist/maplibre-gl.css node_modules/maplibre-gl/dist/maplibre-gl-worker.mjs node_modules/maplibre-gl/dist/maplibre-gl-shared.mjs dist/"
+    "build": "node build.mjs",
+    "test": "node --test catalog.test.js"
   },
   "dependencies": {
     "@carbonplan/zarr-layer": "0.12.1",

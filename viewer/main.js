@@ -15,10 +15,11 @@ import { ZarrLayer } from '@carbonplan/zarr-layer'
 import { IcechunkStore } from 'icechunk-js'
 import * as zarr from 'zarrita'
 import { createLoadTracker, mountLoadsWidget } from './loads.js'
+import { catalogUrl } from './catalog.js'
 
 const GROUP = 'multiscale'
 const q = new URLSearchParams(location.search)
-const CATALOG = q.get('catalog') ?? `${location.protocol}//${location.hostname}:7070/icechunk/_catalogs/gridlook.json`
+const CATALOG = catalogUrl(q.get('catalog'), window.CATALOG_URL, location)
 // Colour palettes, low to high. "auto" uses viridis, or blue–red when the range spans zero.
 // Perceptually ordered palettes only: no rainbow/jet, which invents edges in smooth fields.
 const PALETTES = {
@@ -543,7 +544,9 @@ async function start() {
   const direct = q.get('repo')
   let entries = []
   try {
-    const catalog = await (await fetch(CATALOG)).json()
+    const response = await fetch(CATALOG)
+    if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`)
+    const catalog = await response.json()
     entries = (catalog.datasets ?? []).filter((d) => d.tags?.overviews)
   } catch (e) {
     if (!direct) throw new Error(`could not read the catalog ${CATALOG}: ${e}`)

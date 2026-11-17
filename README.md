@@ -484,6 +484,38 @@ the 2nd–98th percentile of the coarsest level; **Fit to view** sets it to the
 min and max of the data in view, at the level drawn); click the map for a value. The
 basemap is OpenStreetMap's tile server, so it needs internet access.
 
+Build and run the viewer independently (no local S3 service required when using
+public remote repositories):
+
+```bash
+docker build -t icechunk-viewer ./viewer
+docker run --rm -p 8080:80 \
+    -e CATALOG_URL=https://example-bucket.s3.us-west-2.amazonaws.com/_catalogs/gridlook.json \
+    icechunk-viewer
+```
+
+`CATALOG_URL` also accepts `s3://example-bucket/_catalogs/gridlook.json`,
+which the browser translates to `https://example-bucket.s3.amazonaws.com/_catalogs/gridlook.json`.
+Use a public regional HTTPS endpoint if your bucket requires one. For Compose:
+
+```bash
+CATALOG_URL=s3://example-bucket/_catalogs/gridlook.json docker compose up -d --build viewer
+```
+
+The entrypoint writes `CATALOG_URL` to `config.js` at container startup.
+Change the environment variable and recreate the container to use another catalog;
+the same image can be reused.
+Without a value, the viewer uses the page's hostname on port 7070 at
+`/icechunk/_catalogs/gridlook.json`, as in the local Compose setup.
+`?catalog=<URL>` overrides either default, including with an `s3://` URL.
+The catalog is fetched on each page load, rather than copied into the image.
+It must use the gridlook catalog format with public browser-accessible repository
+URLs and entries tagged `overviews`. Remote catalogs and repositories need public
+read access and CORS allowing the viewer's origin; repository reads also need
+range requests (see [Local S3](#local-s3-versitygw)). No AWS credentials are used.
+For a build outside Docker, run `npm run build` in `viewer/` and set
+`window.CATALOG_URL` in `dist/config.js` before serving it.
+
 The map starts zoomed out to the coarsest overview level, and the status line
 names the level the current zoom reads. zarr-layer moves to a finer level as
 soon as the coarser one would be stretched (for WCOFS: L2 up to zoom ≈ 3.1, L1
