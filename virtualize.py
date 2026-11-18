@@ -64,6 +64,12 @@ standard variables AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_ENDPOINT_URL
 the environment, and from a .env file next to this script for anything the
 environment does not set. Credentials are never stored in this file.
 
+Backblaze B2: for backblazeb2.com S3 endpoints, conditional writes are disabled
+automatically and this setting is saved in the repository. Allow only one writer
+at a time, including builds and garbage collection. AWS_RESPONSE_CHECKSUM_VALIDATION
+defaults to WHEN_REQUIRED for B2's empty 304 responses; explicit environment/.env
+values win. Other services can use --unsafe-no-conditional-writes explicitly.
+
 Flaky networks: overview builds and validation read real bytes from the
 source. If they fail with connect timeouts, lower --source-concurrency (e.g.
 8..16) or set source_concurrency in the preset; see also --source-* timeouts
@@ -109,6 +115,7 @@ import warnings
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import icechunk as ic
 import numpy as np
@@ -597,6 +604,11 @@ def make_storage(repo_arg: str) -> ic.Storage:
     return ic.local_filesystem_storage(repo_arg)
 
 
+def is_backblaze_endpoint(endpoint: str | None) -> bool:
+    hostname = (urlsplit(endpoint).hostname or "").rstrip(".") if endpoint else ""
+    return hostname.endswith(".backblazeb2.com")
+
+
 def s3_options() -> dict:
     """ic.s3_storage keyword arguments from the standard AWS variables.
 
@@ -605,6 +617,9 @@ def s3_options() -> dict:
     AWS SDK's own lookup (profiles, SSO, instance metadata) is used."""
     env = lambda k: os.environ.get(k) or None  # noqa: E731 (empty counts as unset)
     endpoint = env("AWS_ENDPOINT_URL")
+    if is_backblaze_endpoint(endpoint):
+        # B2 includes checksum headers on empty 304 responses.
+        os.environ.setdefault("AWS_RESPONSE_CHECKSUM_VALIDATION", "WHEN_REQUIRED")
     opts: dict = {"region": env("AWS_REGION") or env("AWS_DEFAULT_REGION")}
     if endpoint:
         opts |= {
@@ -650,25 +665,42 @@ def read_source(fn, what: str, retries: int):
             time.sleep(wait)
 
 
-def open_or_create_repo(storage: ic.Storage, ds: Dataset) -> tuple[ic.Repository, bool]:
+def open_or_create_repo(
+    storage: ic.Storage, ds: Dataset, *, unsafe_no_conditional_writes: bool = False,
+) -> tuple[ic.Repository, bool]:
     """Create the repository if (and only if) it does not exist; any other error
     (auth, network, config) must surface, so there is no blanket except.
     The returned handle carries source_config (not persisted)."""
     auth = {ds.url_prefix: ic.credentials.HttpAccess}  # anonymous HTTP, but still explicit
     container = ic.VirtualChunkContainer(url_prefix=ds.url_prefix, store=ic.http_store())
-    if not ic.Repository.exists(storage):
+    override = None
+    if unsafe_no_conditional_writes:
+        override = ic.RepositoryConfig(storage=ic.StorageSettings(
+            unsafe_use_conditional_create=False, unsafe_use_conditional_update=False))
+    created = not ic.Repository.exists(storage)
+    if created:
         config = ic.RepositoryConfig.default()
         config.set_virtual_chunk_container(container)
+        if override is not None:
+            config = config.merge(override)
         repo = ic.Repository.create(storage, config=config, authorize_virtual_chunk_access=auth)
-        repo.save_config()  # persist, so public readers discover the container
-        return repo.reopen(config=repo.config.merge(source_config(ds)), authorize_virtual_chunk_access=auth), True
-    repo = ic.Repository.open(storage, authorize_virtual_chunk_access=auth)
-    known = (repo.config.virtual_chunk_containers or {}).keys()
-    if ds.url_prefix not in known:
-        repo.config.set_virtual_chunk_container(container)
+    else:
+        repo = ic.Repository.open(storage, config=override, authorize_virtual_chunk_access=auth)
+    needs_container = ds.url_prefix not in (repo.config.virtual_chunk_containers or {})
+    if needs_container:
+        config = repo.config
+        config.set_virtual_chunk_container(container)
+        repo = repo.reopen(config=config, authorize_virtual_chunk_access=auth)
+    if created or override is not None or needs_container:
+        # Persist destination compatibility settings and source containers.
         repo.save_config()
-        repo = ic.Repository.open(storage, authorize_virtual_chunk_access=auth)
-    return repo.reopen(config=repo.config.merge(source_config(ds)), authorize_virtual_chunk_access=auth), False
+    settings = repo.config.storage
+    if settings is not None and (settings.unsafe_use_conditional_create is False
+                                or settings.unsafe_use_conditional_update is False):
+        log.warning("conditional writes are disabled in this repository; allow only one writer "
+                    "at a time, including builds and garbage collection")
+    repo = repo.reopen(config=repo.config.merge(source_config(ds)), authorize_virtual_chunk_access=auth)
+    return repo, created
 
 
 def read_committed(repo: ic.Repository, dim: str) -> xr.Dataset | None:
@@ -1120,7 +1152,10 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
         return
 
     storage = make_storage(args.repo)
-    repo, created = open_or_create_repo(storage, ds)
+    disable_conditional_writes = args.unsafe_no_conditional_writes or (
+        args.repo.startswith("s3://") and is_backblaze_endpoint(os.environ.get("AWS_ENDPOINT_URL")))
+    repo, created = open_or_create_repo(
+        storage, ds, unsafe_no_conditional_writes=disable_conditional_writes)
     log.info("%s repository %s", "created" if created else "opened", args.repo)
 
     committed = read_committed(repo, dim)
@@ -1676,6 +1711,10 @@ def main() -> None:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("dataset", choices=sorted(datasets), help=f"dataset preset from {config_path.name}")
     p.add_argument("--repo", help="repository: local directory or s3://bucket/prefix")
+    p.add_argument("--unsafe-no-conditional-writes", action="store_true",
+                   help="disable conditional writes (automatic for Backblaze B2 S3 endpoints); "
+                        "saved in the repository; requires only one writer at a time, "
+                        "including builds and garbage collection")
     p.add_argument("--start", type=parse_time, required=True,
                    help="first valid time, inclusive: YYYY-MM-DD or YYYY-MM-DDTHH[:MM[:SS]], UTC; "
                         "or today / today-N (whole days)")

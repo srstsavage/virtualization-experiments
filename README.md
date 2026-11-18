@@ -277,6 +277,27 @@ the shell take precedence. Leave `AWS_ENDPOINT_URL` empty to target AWS
 itself. The anonymous source listing and file reads ignore all `AWS_*`
 variables, so these settings only affect the destination.
 
+Backblaze B2 rejects conditional write headers (`If-Match` / `If-None-Match`).
+For S3 destinations with `AWS_ENDPOINT_URL` hosts ending in `.backblazeb2.com`,
+the script automatically disables conditional writes and defaults
+`AWS_RESPONSE_CHECKSUM_VALIDATION` to `WHEN_REQUIRED` to handle B2's checksum
+headers on empty `304 Not Modified` responses. Explicit values in the environment
+or `.env` take precedence for checksum validation:
+
+```bash
+./virtualize.py ciofs-regulargrid-best \
+    --repo s3://grid-virtualization/ciofs-rg-best.icechunk --start today-1
+```
+
+This saves `unsafe_use_conditional_create=False` and
+`unsafe_use_conditional_update=False` in the repository configuration. Allow
+only one writer at a time, including builds and garbage collection, because
+concurrent updates can overwrite each other. Subsequent runs retain this setting.
+For other services that reject conditional writes, pass
+`--unsafe-no-conditional-writes` explicitly.
+If an earlier creation attempt left objects behind and retrying reports
+`bad object store prefix`, use a fresh empty repository prefix.
+
 Public URL of a repository: `http://localhost:7070/icechunk/<name>.icechunk/`.
 Reading it from Python without credentials:
 
