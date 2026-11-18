@@ -2,8 +2,10 @@
 
 ```
 sbx skills add ocean-icechunks/ocean-icechunks-skills
-sbx settings set claude.remoteControl true
-sbx run claude --kit docker.io/sbx/mise:latest
+sbx run codex --kit docker.io/sbx/mise:latest
+#or
+#sbx settings set claude.remoteControl true
+#sbx run claude --kit docker.io/sbx/mise:latest
 ```
 
 
