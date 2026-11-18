@@ -153,6 +153,8 @@ without comparing against a repository.
 | `--overview-variables` | preset | Comma-separated variables to build overviews for |
 | `--overview-levels` | 3 | Levels including full resolution (`auto`: halve until a side would drop below 256) |
 | `--overview-method` | `mean` | `mean`, `min`, `max` or `nearest` |
+| `--overview-keep-mantissa-bits` | disabled | Lossy float32 rounding of stored overview levels, retaining 0–23 mantissa bits; 23 is a no-op |
+| `--overview-keep-mantissa-bits-by-variable` | preset | `VARIABLE=BITS` or `VARIABLE=none`; repeat to override individual variables |
 
 Every field of a dataset preset can also be overridden from the command line:
 `--bucket-url`, `--http-base`, `--key-root`, `--key-template`, `--file-regex`,
@@ -180,7 +182,7 @@ or put it in your own file and pass `--config path/to/file.yml`:
 | `drop_global_attrs` | `[file, history, rst_file, ..., 'frc_file_[0-9]*']` | Global attributes that describe a single run/file, as a list of names. Wildcards allowed (see below). Default `[file, history]` |
 | `coord_aliases` | `{lat: lat_rho, lon: lon_rho}` | Extra coordinates `{alias: source}` that reuse the source coordinate's references (no data copied), for viewers that only recognise names like `lat`/`lon`. Default none |
 | `rectilinear` | (regulargrid: `{lat: Latitude, lon: Longitude}`) | A regular grid that the files store as 2-D lat/lon arrays. They must be in `loadable`; they are checked to be rectilinear and evenly spaced, then replaced by 1-D `lat`/`lon` coordinates, and their dimensions are renamed `lat`/`lon` (references unchanged). Default none |
-| `overviews` | (regulargrid: `{variables: [zeta, temp, ...], levels: 3, method: mean}`) | Build [multiscale overviews](#multiscale-overviews) by default. Needs a regular grid. Default none |
+| `overviews` | (regulargrid: `{variables: [zeta, temp, ...], levels: 3, method: mean}`) | Build [multiscale overviews](#multiscale-overviews) by default. Optional `keep_mantissa_bits: 0..23` sets default float32 rounding; `keep_mantissa_bits_by_variable` overrides individual variables. Needs a regular grid. Default none |
 
 The WCOFS entry in full:
 
@@ -481,6 +483,114 @@ from NOAA, which dominates build time. Choose `overviews.variables` (or
 (56 steps, the default five variables, 3 levels) took 1 h 53 min on a ~5 MB/s
 link (~2 min per step) and produced a 2.7 GB repository (~48 MB per step after
 compression).
+
+### Optional bitrounding
+
+For a **new** repository, `--overview-keep-mantissa-bits 12` (or
+`overviews.keep_mantissa_bits: 12` in YAML) rounds stored overview values to
+12 explicit mantissa bits before compression. The float32 dtype, chunks and
+codecs stay the same, so existing readers need no new decoder. Presets leave
+rounding disabled; 23 retains all float32 bits and is an exact no-op.
+
+Each dataset can set a default and override individual variables:
+
+```yaml
+overviews:
+  variables: [zeta, temp, salt, u_eastward, v_northward]
+  levels: 3
+  method: mean
+  keep_mantissa_bits: 12
+  keep_mantissa_bits_by_variable:
+    temp: 16
+    salt: null  # disable rounding for this variable
+```
+
+Here `zeta` and both currents use 12 bits, `temp` uses 16, and `salt` stays
+unrounded. An omitted or `null` dataset default disables rounding for variables
+without overrides, so a dataset can also opt in only selected variables.
+Only variables with rounding enabled must be float32. Override names must be
+eligible spatial data variables; an override may remain in the preset when
+`--overview-variables` selects a smaller subset.
+
+`--overview-keep-mantissa-bits` overrides the dataset default. Variable settings
+take precedence over that default; use the repeatable
+`--overview-keep-mantissa-bits-by-variable temp=14` or
+`--overview-keep-mantissa-bits-by-variable salt=none` to override those settings
+on the command line. Repeated assignments to the same variable use the last
+value. YAML `null` and CLI `none` disable rounding; 23 is a float32 no-op.
+
+The algorithm follows dynamical.org's
+[binary rounding](https://github.com/dynamical-org/reformatters/blob/main/src/reformatters/common/binary_rounding.py):
+round to nearest with ties to even. This implementation explicitly preserves
+NaNs (including their payloads), infinities and signed zeros. Only selected
+float32 data variables are supported when rounding is enabled. Coordinates,
+root arrays and level-0 references are unchanged. Each coarser level is computed
+from the **unrounded** preceding intermediate; only the stored copy is rounded.
+
+This trades precision for improved compression, without reducing source reads
+or uncompressed array size. At 10, 12, 14 and 16 retained bits the maximum
+relative rounding errors for normal finite values without overflow are about
+0.0488%, 0.0122%, 0.00305% and 0.000763%, respectively, relative to the unrounded
+overview value. Absolute error depends on the variable and its magnitude;
+these bounds do not establish scientific suitability. Finite values near the
+float32 maximum can round to infinity; subnormals can round to signed zero.
+
+The `multiscale` group's `bitround` attribute records the algorithm, default bit
+count and variable overrides. Appends and `--force` replacements use the stored settings; later CLI or
+preset changes cannot change it. Repositories without that attribute retain
+their existing unrounded behavior. Build a new repository to adopt rounding.
+Validation reconstructs the unrounded chain from level 0 and checks the rounded
+outputs, rather than comparing against a reduction of the rounded stored level.
+With variable overrides, it checks every overview variable at one depth and the
+last timestep; otherwise it retains the inexpensive smallest-variable check.
+
+Measure a representative file before choosing a bit count:
+
+```bash
+uv run --script benchmark_bitrounding.py wcofs-regulargrid-nowcast \
+    --source-url https://noaa-nos-ofs-pds.s3.amazonaws.com/wcofs/netcdf/2026/11/15/wcofs.t03z.20261115.regulargrid.n003.nc \
+    --output /tmp/wcofs-bitrounding.json
+uv run --script test_bitrounding.py
+```
+
+The benchmark writes disposable local repositories using the production writer
+and its existing chunking/compression. It tests disabled rounding and 10, 12,
+14 and 16 retained bits across all configured variables, depths and overview
+levels of the first timestep. Source arrays are fetched once and replayed from
+temporary memory-mapped files. This sweep uses uniform bit counts independently
+of the dataset's configured default and variable overrides. JSON reports include compressed chunk bytes by
+variable/level, total repository bytes, numerical errors, write time excluding
+source fetches, and process peak RSS (a cumulative high-water mark). They record
+source URLs, valid times, codecs and package versions. Relative-error statistics
+exclude a documented near-zero interval; absolute error and RMSE include zero.
+The two Python scripts declare the same pinned dependencies as `virtualize.py`.
+
+Measured on 2026-11-18 using the WCOFS file above and
+`ciofs/netcdf/2026/11/15/ciofs.t00z.20261115.regulargrid.n001.nc`, with all five
+variables, every depth, and two materialized overview levels:
+
+| Retained bits | WCOFS overview MB | Reduction | CIOFS overview MB | Reduction |
+|---|---:|---:|---:|---:|
+| disabled | 50.72 | — | 32.29 | — |
+| 10 | 26.20 | 48.3% | 16.03 | 50.4% |
+| 12 | 31.42 | 38.1% | 19.71 | 38.9% |
+| 14 | 35.94 | 29.2% | 22.88 | 29.1% |
+| 16 | 40.11 | 20.9% | 25.67 | 20.5% |
+
+MB here means 1,000,000 bytes of overview chunks, including shard indexes.
+Full measurements, including absolute errors and RMSE per variable/level, are in
+[WCOFS](benchmarks/bitrounding-wcofs.json) and
+[CIOFS](benchmarks/bitrounding-ciofs.json). Every written array was reopened and
+compared with its expected rounded values. These are single-timestep samples
+(valid times November 14 at 06:00 and 19:00 UTC), not archive-wide estimates.
+Write/commit times excluding source fetches were roughly 5–6 seconds for WCOFS
+and 7 seconds for CIOFS; these single runs do not establish a performance
+improvement. Peak process RSS was about 1.7–2.0 GB, including verification.
+Choose precision from application tolerances; these measurements do not change
+the disabled default.
+
+A synthetic 12-bit fixture also rendered through the existing viewer in
+headless Chromium using its unchanged Icechunk/Zarr decoders.
 
 **Reading.** `xr.open_datatree(store, group="multiscale", engine="zarr",
 consolidated=False)` gives one child per level. In the browser, use the maps

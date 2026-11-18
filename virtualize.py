@@ -190,7 +190,9 @@ class Dataset:
     # dimensions are renamed to lat/lon (metadata only; references unchanged).
     rectilinear: dict[str, str] = dataclasses.field(default_factory=dict)
     # Multiscale overviews (see "Multiscale overviews" below), as
-    # {variables: [...], levels: 3 | auto, method: mean|min|max|nearest}.
+    # {variables: [...], levels: 3 | auto, method: mean|min|max|nearest,
+    #  keep_mantissa_bits: 0..23 (optional dataset default, lossy float32),
+    #  keep_mantissa_bits_by_variable: {name: 0..23 | null}}.
     # Present = built by default; --overviews/--no-overviews override.
     # Needs `rectilinear` (or 1-D lat/lon coordinates).
     overviews: dict | None = None
@@ -274,11 +276,15 @@ def load_datasets(path: Path = DATASETS_FILE) -> dict[str, Dataset]:
             ov = fields["overviews"]
             if ov is None:
                 ov = {}
-            if not isinstance(ov, dict) or set(ov) - {"variables", "levels", "method"}:
+            if not isinstance(ov, dict) or set(ov) - {
+                    "variables", "levels", "method", "keep_mantissa_bits", "keep_mantissa_bits_by_variable"}:
                 raise SystemExit(f"{path}: dataset {name!r}: overviews must be a mapping with "
-                                 "variables, levels and/or method")
+                                 "variables, levels, method, keep_mantissa_bits and/or "
+                                 "keep_mantissa_bits_by_variable")
             if "variables" in ov and not isinstance(ov["variables"], list):
                 raise SystemExit(f"{path}: dataset {name!r}: overviews.variables must be a list")
+            parse_keep_mantissa_bits(ov.get("keep_mantissa_bits"))
+            parse_variable_rounding(ov.get("keep_mantissa_bits_by_variable", {}))
             fields["overviews"] = ov
         try:
             out[name] = Dataset(**fields)
@@ -831,6 +837,7 @@ def replace_steps(session: ic.Session, vds: xr.Dataset, dim: str, start: int) ->
 OVERVIEW_GROUP = "multiscale"
 OVERVIEW_METHODS = ("mean", "min", "max", "nearest")
 OVERVIEW_BUDGET = 512 * 2**20  # bytes of one variable's level-0 data held at once
+BITROUND_ALGORITHM = "float32-round-to-nearest-ties-to-even-v1"
 
 
 @dataclass(frozen=True)
@@ -838,6 +845,72 @@ class Overviews:
     variables: tuple[str, ...]  # empty: every variable over (time, ..., lat, lon)
     levels: int | str = 3  # levels including level 0, or "auto" (topozarr's min_dim rule)
     method: str = "mean"
+    keep_mantissa_bits: int | None = None
+    keep_mantissa_bits_by_variable: dict[str, int | None] = dataclasses.field(default_factory=dict)
+
+    def bits_for(self, variable: str) -> int | None:
+        return self.keep_mantissa_bits_by_variable.get(variable, self.keep_mantissa_bits)
+
+
+def parse_keep_mantissa_bits(value) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 23:
+        raise SystemExit("overviews: keep_mantissa_bits must be an integer from 0 to 23")
+    return value
+
+
+def parse_variable_rounding(value) -> dict[str, int | None]:
+    if not isinstance(value, dict) or any(not isinstance(k, str) or not k for k in value):
+        raise SystemExit("overviews: keep_mantissa_bits_by_variable must map variable names to 0..23 or null")
+    return {k: parse_keep_mantissa_bits(bits) for k, bits in value.items()}
+
+
+def parse_variable_rounding_arg(value: str) -> tuple[str, int | None]:
+    name, sep, raw = value.partition("=")
+    try:
+        if not name or not sep:
+            raise ValueError
+        bits = None if raw.lower() in ("none", "null") else int(raw)
+        return name, parse_keep_mantissa_bits(bits)
+    except (ValueError, SystemExit):
+        raise argparse.ArgumentTypeError("expected VARIABLE=0..23 or VARIABLE=none") from None
+
+
+def round_float32(value: np.ndarray, keep_mantissa_bits: int) -> np.ndarray:
+    """Return a rounded copy, retaining float32 dtype and special-value bits.
+
+    Based on dynamical-org/reformatters common/binary_rounding.py: round to
+    nearest, ties to even. Work on a copy so the unrounded pyramid can continue.
+    Unsigned addition carries into the exponent, including subnormal promotion
+    and finite overflow to infinity. Exponent-all-ones values are never changed.
+    """
+    parse_keep_mantissa_bits(keep_mantissa_bits)
+    if keep_mantissa_bits is None or value.dtype != np.dtype("float32"):
+        raise ValueError("round_float32 requires float32 data and a bit count from 0 to 23")
+    out = np.array(value, copy=True, order="C")
+    if keep_mantissa_bits == 23:
+        return out
+    bits = out.view(np.uint32)
+    finite = (bits & np.uint32(0x7f800000)) != np.uint32(0x7f800000)
+    drop = 23 - keep_mantissa_bits
+    selected = bits[finite]
+    selected += ((selected >> drop) & np.uint32(1)) + np.uint32((1 << (drop - 1)) - 1)
+    selected &= np.uint32(0xffffffff ^ ((1 << drop) - 1))
+    bits[finite] = selected
+    return out
+
+
+def stored_rounding(group) -> tuple[int | None, dict[str, int | None]]:
+    rounding = group.attrs.get("bitround")
+    if rounding is None:
+        return None, {}
+    if not isinstance(rounding, dict) or rounding.get("algorithm") != BITROUND_ALGORITHM:
+        raise SystemExit("overviews: unsupported stored bitround algorithm")
+    if "keep_mantissa_bits" not in rounding:
+        raise SystemExit("overviews: stored bitround metadata is missing keep_mantissa_bits")
+    return (parse_keep_mantissa_bits(rounding["keep_mantissa_bits"]),
+            parse_variable_rounding(rounding.get("keep_mantissa_bits_by_variable", {})))
 
 
 def parse_levels(value) -> int | str:
@@ -865,7 +938,8 @@ def stored_overviews(repo: ic.Repository, dim: str) -> Overviews | None:
     variables = tuple(sorted(
         n for n, a in level0.arrays()
         if {dim, "lat", "lon"} <= set(a.metadata.dimension_names or ())))
-    return Overviews(variables, len(layout), method)
+    default, overrides = stored_rounding(group)
+    return Overviews(variables, len(layout), method, default, overrides)
 
 
 def resolve_overviews(args: argparse.Namespace, ds: Dataset, has_data: bool,
@@ -879,7 +953,9 @@ def resolve_overviews(args: argparse.Namespace, ds: Dataset, has_data: bool,
             if requested is False:
                 raise SystemExit("this repository has overviews, which must be updated with every "
                                  "build; drop --no-overviews")
-            if args.overview_variables or args.overview_levels or args.overview_method:
+            if (args.overview_variables or args.overview_levels or args.overview_method
+                    or args.overview_keep_mantissa_bits is not None
+                    or args.overview_keep_mantissa_bits_by_variable):
                 log.warning("overviews: settings are fixed when a repository is created; "
                             "keeping %s", stored)
             return stored
@@ -899,6 +975,10 @@ def resolve_overviews(args: argparse.Namespace, ds: Dataset, has_data: bool,
         cfg["levels"] = args.overview_levels
     if args.overview_method:
         cfg["method"] = args.overview_method
+    if args.overview_keep_mantissa_bits is not None:
+        cfg["keep_mantissa_bits"] = args.overview_keep_mantissa_bits
+    overrides = parse_variable_rounding(cfg.get("keep_mantissa_bits_by_variable", {}))
+    overrides.update(dict(args.overview_keep_mantissa_bits_by_variable or []))
     method = str(cfg.get("method", "mean"))
     if method not in OVERVIEW_METHODS:
         raise SystemExit(f"overviews: method must be one of {', '.join(OVERVIEW_METHODS)}")
@@ -907,19 +987,28 @@ def resolve_overviews(args: argparse.Namespace, ds: Dataset, has_data: bool,
                          "dataset's grid is not declared regular. Curvilinear grids (e.g. the ROMS "
                          "`fields` files) cannot have overviews: use the `regulargrid` presets")
     return Overviews(tuple(str(v) for v in cfg.get("variables") or ()),
-                     parse_levels(cfg.get("levels", 3)), method)
+                     parse_levels(cfg.get("levels", 3)), method,
+                     parse_keep_mantissa_bits(cfg.get("keep_mantissa_bits")), overrides)
 
 
 def overview_variables(vds: xr.Dataset, ov: Overviews, dim: str) -> list[str]:
     spatial = {dim, "lat", "lon"}
     eligible = [n for n, v in vds.data_vars.items() if spatial <= set(v.dims)]
     if not ov.variables:
-        return eligible
+        variables = eligible
+    else:
+        variables = list(ov.variables)
     bad = [v for v in ov.variables if v not in eligible]
     if bad:
         raise SystemExit(f"overviews: {', '.join(bad)} not in the files or not over "
                          f"({dim}, lat, lon); candidates: {', '.join(eligible)}")
-    return list(ov.variables)
+    unknown = set(ov.keep_mantissa_bits_by_variable) - set(eligible)
+    if unknown:
+        raise SystemExit(f"overviews: bitround overrides name ineligible variables: {', '.join(sorted(unknown))}")
+    bad = [v for v in variables if ov.bits_for(v) is not None and vds[v].dtype != np.dtype("float32")]
+    if bad:
+        raise SystemExit(f"overviews: bitround requires float32 variables: {', '.join(bad)}")
+    return variables
 
 
 def reduce2(a: np.ndarray, method: str) -> np.ndarray:
@@ -1028,6 +1117,10 @@ def update_overviews(session: ic.Session, vds: xr.Dataset, ov: Overviews, dim: s
     if create:
         plan = _overview_plan(lvl0, variables, ov, dim)
         zarr.open_group(store, path=OVERVIEW_GROUP, mode="r+").attrs.update(plan.attrs)
+        if ov.keep_mantissa_bits is not None or ov.keep_mantissa_bits_by_variable:
+            zarr.open_group(store, path=OVERVIEW_GROUP, mode="r+").attrs["bitround"] = {
+                "algorithm": BITROUND_ALGORITHM, "keep_mantissa_bits": ov.keep_mantissa_bits,
+                "keep_mantissa_bits_by_variable": ov.keep_mantissa_bits_by_variable}
     layout = zarr.open_group(store, path=OVERVIEW_GROUP, mode="r").attrs["multiscales"]["layout"]
     levels = len(layout)
     shapes = [tuple(e["spatial:shape"]) for e in layout]
@@ -1057,7 +1150,10 @@ def update_overviews(session: ic.Session, vds: xr.Dataset, ov: Overviews, dim: s
         for k in range(1, levels):
             group = f"{OVERVIEW_GROUP}/{k}"
             out = xr.Dataset(
-                {v: (lvl0[v].dims, data[k][v], dict(lvl0[v].attrs)) for v in variables},
+                {v: (lvl0[v].dims,
+                     round_float32(data[k][v], ov.bits_for(v))
+                     if ov.bits_for(v) is not None else data[k][v],
+                     dict(lvl0[v].attrs)) for v in variables},
                 coords={dim: times.variable})
             if not exists[k]:
                 tmpl = plan.level_templates[k]
@@ -1088,9 +1184,10 @@ def update_overviews(session: ic.Session, vds: xr.Dataset, ov: Overviews, dim: s
 
 
 def validate_overviews(store, dim: str, root_times: np.ndarray, read_retries: int = 5) -> None:
-    """Every level holds the root's time steps at its declared shape, and the last
-    step of each level is the reduction of the level below it."""
+    """Check shapes/times and the last step's reduction chain. With bitround,
+    reconstruct unrounded intermediates from level 0, rounding only outputs."""
     root = zarr.open_group(store, path=OVERVIEW_GROUP, mode="r")
+    default_bits, overrides = stored_rounding(root)
     layout = root.attrs["multiscales"]["layout"]
     method = next((e.get("resampling_method") for e in layout[1:] if e.get("resampling_method")), "mean")
     levels = [xr.open_zarr(store, group=f"{OVERVIEW_GROUP}/{e['asset']}", consolidated=False, chunks=None)
@@ -1099,17 +1196,24 @@ def validate_overviews(store, dim: str, root_times: np.ndarray, read_retries: in
         assert (lv[dim].values == root_times).all(), f"overview level {k}: time steps differ from the root"
         assert (lv.sizes["lat"], lv.sizes["lon"]) == tuple(entry["spatial:shape"]), \
             f"overview level {k}: shape differs from its metadata"
-    # Smallest variable per step keeps the read-back cheap.
-    var = min(levels[1].data_vars, key=lambda v: math.prod(levels[1][v].shape[1:]))
-    sel = {d: 0 for d in levels[0][var].dims if d not in (dim, "lat", "lon")} | {dim: -1}
-    prev = read_source(lambda: levels[0][var].isel(sel).values, f"{var} (level 0)", read_retries)
-    for k in range(1, len(levels)):
-        got = read_source(lambda: levels[k][var].isel(sel).values, f"{var} (level {k})", read_retries)
-        assert np.allclose(reduce2(prev, method), got, equal_nan=True, rtol=1e-5, atol=1e-6), \
-            f"overview level {k} of {var} is not the {method} of level {k - 1}"
-        prev = got
+    # Mixed policies are checked for every variable; otherwise keep the existing
+    # inexpensive check of the smallest variable, at one depth and the last time.
+    variables = (list(levels[1].data_vars) if overrides else
+                 [min(levels[1].data_vars, key=lambda v: math.prod(levels[1][v].shape[1:]))])
+    for var in variables:
+        keep_bits = overrides.get(var, default_bits)
+        sel = {d: 0 for d in levels[0][var].dims if d not in (dim, "lat", "lon")} | {dim: -1}
+        prev = read_source(lambda: levels[0][var].isel(sel).values, f"{var} (level 0)", read_retries)
+        for k in range(1, len(levels)):
+            got = read_source(lambda: levels[k][var].isel(sel).values, f"{var} (level {k})", read_retries)
+            expected = reduce2(prev, method)
+            rounded = round_float32(expected, keep_bits) if keep_bits is not None else expected
+            assert (np.array_equal(rounded, got, equal_nan=True) if keep_bits is not None else
+                    np.allclose(rounded, got, equal_nan=True, rtol=1e-5, atol=1e-6)), \
+                f"overview level {k} of {var} is not the {method} of level {k - 1}"
+            prev = expected if keep_bits is not None else got
     log.info("validated overviews: %d levels (%s), %s at the last step matches level by level",
-             len(levels), " / ".join(f"{lv.sizes['lat']}x{lv.sizes['lon']}" for lv in levels), var)
+             len(levels), " / ".join(f"{lv.sizes['lat']}x{lv.sizes['lon']}" for lv in levels), ",".join(variables))
 
 
 # --------------------------------------------------------------------------- #
@@ -1174,6 +1278,10 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
     if ov:
         log.info("overviews: %s levels (%s), variables: %s", ov.levels, ov.method,
                  ", ".join(ov.variables) or "all over (time, lat, lon)")
+        if ov.keep_mantissa_bits is not None:
+            log.info("overviews: float32 bitround retaining %d mantissa bits", ov.keep_mantissa_bits)
+        if ov.keep_mantissa_bits_by_variable:
+            log.info("overviews: bitround variable overrides: %s", ov.keep_mantissa_bits_by_variable)
 
     stored: dict = {}
     if ds.sources:
@@ -1773,6 +1881,11 @@ def main() -> None:
     ovg.add_argument("--overview-levels", metavar="N|auto",
                      help="number of levels including the full-resolution level 0 (default 3)")
     ovg.add_argument("--overview-method", choices=OVERVIEW_METHODS, help="reduction (default mean)")
+    ovg.add_argument("--overview-keep-mantissa-bits", type=int, choices=range(24), metavar="0..23",
+                     help="lossy float32 overview rounding (default disabled; 23 is a no-op)")
+    ovg.add_argument("--overview-keep-mantissa-bits-by-variable", action="append",
+                     type=parse_variable_rounding_arg, metavar="VARIABLE=BITS|none",
+                     help="override a variable's overview rounding; repeat for multiple variables")
     args = p.parse_args()
 
     lo, hi, incl = time_bounds(args.start, args.end)

@@ -1,0 +1,2875 @@
+{
+  "dataset": "ciofs-regulargrid-nowcast",
+  "source_url": "https://noaa-nos-ofs-pds.s3.amazonaws.com/ciofs/netcdf/2026/11/15/ciofs.t00z.20261115.regulargrid.n001.nc",
+  "valid_time": "2026-11-14T19:00:00.000000000",
+  "versions": {
+    "icechunk": "2.3.1",
+    "virtualizarr": "2.8.0",
+    "xarray": "2026.9.0",
+    "zarr": "3.4.2",
+    "obstore": "0.12.1",
+    "obspec-utils": "0.9.0",
+    "python": "3.14.10",
+    "numpy": "2.5.5",
+    "topozarr": "0.3.0"
+  },
+  "notes": [
+    "Source arrays fetched once, then replayed from local memory-mapped files.",
+    "Elapsed write time includes rounding, encoding and commit; excludes source fetches.",
+    "Peak RSS is the process high-water mark, including verification and earlier variants.",
+    "Chunk bytes include shard indexes; repository bytes also include metadata and coordinates.",
+    "Relative errors exclude abs(value) <= max(max_abs_value * 1e-6, 1e-12)."
+  ],
+  "variants": [
+    {
+      "keep_mantissa_bits": null,
+      "overview_chunk_bytes": 32286269,
+      "savings_fraction": 0.0,
+      "repository_bytes": 32325653,
+      "write_seconds_excluding_source_fetch": 7.394606116999057,
+      "process_peak_rss_bytes": 1820946432,
+      "virtual_source_locations": [
+        "https://noaa-nos-ofs-pds.s3.amazonaws.com/ciofs/netcdf/2026/11/15/ciofs.t00z.20261115.regulargrid.n001.nc"
+      ],
+      "arrays": [
+        {
+          "variable": "zeta",
+          "level": 1,
+          "shape": [
+            1,
+            486,
+            730
+          ],
+          "chunk_bytes": 369048,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 102857,
+          "max_absolute_error": 0.0,
+          "rmse": 0.0,
+          "relative_error_min_abs": 1.2769535064697265e-05,
+          "max_relative_error": 0.0
+        },
+        {
+          "variable": "zeta",
+          "level": 2,
+          "shape": [
+            1,
+            243,
+            365
+          ],
+          "chunk_bytes": 98028,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 26560,
+          "max_absolute_error": 0.0,
+          "rmse": 0.0,
+          "relative_error_min_abs": 1.1148723602294922e-05,
+          "max_relative_error": 0.0
+        },
+        {
+          "variable": "temp",
+          "level": 1,
+          "shape": [
+            1,
+            27,
+            486,
+            730
+          ],
+          "chunk_bytes": 6044362,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 1809859,
+          "max_absolute_error": 0.0,
+          "rmse": 0.0,
+          "relative_error_min_abs": 8.1102237701416e-06,
+          "max_relative_error": 0.0
+        },
+        {
+          "variable": "temp",
+          "level": 2,
+          "shape": [
+            1,
+            27,
+            243,
+            365
+          ],
+          "chunk_bytes": 1619508,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 472419,
+          "max_absolute_error": 0.0,
+          "rmse": 0.0,
+          "relative_error_min_abs": 8.108759880065918e-06,
+          "max_relative_error": 0.0
+        },
+        {
+          "variable": "salt",
+          "level": 1,
+          "shape": [
+            1,
+            27,
+            486,
+            730
+          ],
+          "chunk_bytes": 5576681,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 1809859,
+          "max_absolute_error": 0.0,
+          "rmse": 0.0,
+          "relative_error_min_abs": 3.3790214538574216e-05,
+          "max_relative_error": 0.0
+        },
+        {
+          "variable": "salt",
+          "level": 2,
+          "shape": [
+            1,
+            27,
+            243,
+            365
+          ],
+          "chunk_bytes": 1542880,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 472419,
+          "max_absolute_error": 0.0,
+          "rmse": 0.0,
+          "relative_error_min_abs": 3.3790214538574216e-05,
+          "max_relative_error": 0.0
+        },
+        {
+          "variable": "u_eastward",
+          "level": 1,
+          "shape": [
+            1,
+            27,
+            486,
+            730
+          ],
+          "chunk_bytes": 6754210,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 1806652,
+          "max_absolute_error": 0.0,
+          "rmse": 0.0,
+          "relative_error_min_abs": 4.2316718101501464e-06,
+          "max_relative_error": 0.0
+        },
+        {
+          "variable": "u_eastward",
+          "level": 2,
+          "shape": [
+            1,
+            27,
+            243,
+            365
+          ],
+          "chunk_bytes": 1796125,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 471449,
+          "max_absolute_error": 0.0,
+          "rmse": 0.0,
+          "relative_error_min_abs": 3.0083255767822265e-06,
+          "max_relative_error": 0.0
+        },
+        {
+          "variable": "v_northward",
+          "level": 1,
+          "shape": [
+            1,
+            27,
+            486,
+            730
+          ],
+          "chunk_bytes": 6696558,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 1806652,
+          "max_absolute_error": 0.0,
+          "rmse": 0.0,
+          "relative_error_min_abs": 1.7504873275756835e-06,
+          "max_relative_error": 0.0
+        },
+        {
+          "variable": "v_northward",
+          "level": 2,
+          "shape": [
+            1,
+            27,
+            243,
+            365
+          ],
+          "chunk_bytes": 1788869,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 471449,
+          "max_absolute_error": 0.0,
+          "rmse": 0.0,
+          "relative_error_min_abs": 1.6783866882324217e-06,
+          "max_relative_error": 0.0
+        }
+      ]
+    },
+    {
+      "keep_mantissa_bits": 10,
+      "overview_chunk_bytes": 16026823,
+      "savings_fraction": 0.5036025066879051,
+      "repository_bytes": 16066225,
+      "write_seconds_excluding_source_fetch": 6.61235616599879,
+      "process_peak_rss_bytes": 1916485632,
+      "virtual_source_locations": [
+        "https://noaa-nos-ofs-pds.s3.amazonaws.com/ciofs/netcdf/2026/11/15/ciofs.t00z.20261115.regulargrid.n001.nc"
+      ],
+      "arrays": [
+        {
+          "variable": "zeta",
+          "level": 1,
+          "shape": [
+            1,
+            486,
+            730
+          ],
+          "chunk_bytes": 197779,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 102857,
+          "max_absolute_error": 0.003902435302734375,
+          "rmse": 0.0001646287876271987,
+          "relative_error_min_abs": 1.2769535064697265e-05,
+          "max_relative_error": 0.0004861448711716091
+        },
+        {
+          "variable": "zeta",
+          "level": 2,
+          "shape": [
+            1,
+            243,
+            365
+          ],
+          "chunk_bytes": 59895,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 26560,
+          "max_absolute_error": 0.0035991668701171875,
+          "rmse": 0.0001730966805143133,
+          "relative_error_min_abs": 1.1148723602294922e-05,
+          "max_relative_error": 0.0004844805828783754
+        },
+        {
+          "variable": "temp",
+          "level": 1,
+          "shape": [
+            1,
+            27,
+            486,
+            730
+          ],
+          "chunk_bytes": 2381692,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 1809859,
+          "max_absolute_error": 0.0039033889770507812,
+          "rmse": 0.0011269822017522936,
+          "relative_error_min_abs": 8.1102237701416e-06,
+          "max_relative_error": 0.00048768532012376936
+        },
+        {
+          "variable": "temp",
+          "level": 2,
+          "shape": [
+            1,
+            27,
+            243,
+            365
+          ],
+          "chunk_bytes": 776197,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 472419,
+          "max_absolute_error": 0.003902435302734375,
+          "rmse": 0.0011279520563900066,
+          "relative_error_min_abs": 8.108759880065918e-06,
+          "max_relative_error": 0.0004861379269955105
+        },
+        {
+          "variable": "salt",
+          "level": 1,
+          "shape": [
+            1,
+            27,
+            486,
+            730
+          ],
+          "chunk_bytes": 992277,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 1809859,
+          "max_absolute_error": 0.015625,
+          "rmse": 0.007848285212148287,
+          "relative_error_min_abs": 3.3790214538574216e-05,
+          "max_relative_error": 0.0004880429477794046
+        },
+        {
+          "variable": "salt",
+          "level": 2,
+          "shape": [
+            1,
+            27,
+            243,
+            365
+          ],
+          "chunk_bytes": 381062,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 472419,
+          "max_absolute_error": 0.015625,
+          "rmse": 0.007818349331444251,
+          "relative_error_min_abs": 3.3790214538574216e-05,
+          "max_relative_error": 0.0004880429477794046
+        },
+        {
+          "variable": "u_eastward",
+          "level": 1,
+          "shape": [
+            1,
+            27,
+            486,
+            730
+          ],
+          "chunk_bytes": 4425967,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 1806652,
+          "max_absolute_error": 0.0012030601501464844,
+          "rmse": 4.6096263075783265e-05,
+          "relative_error_min_abs": 4.2316718101501464e-06,
+          "max_relative_error": 0.0004880429477794046
+        },
+        {
+          "variable": "u_eastward",
+          "level": 2,
+          "shape": [
+            1,
+            27,
+            243,
+            365
+          ],
+          "chunk_bytes": 1232939,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 471449,
+          "max_absolute_error": 0.0008733272552490234,
+          "rmse": 4.546217975848511e-05,
+          "relative_error_min_abs": 3.0083255767822265e-06,
+          "max_relative_error": 0.00048721010968714876
+        },
+        {
+          "variable": "v_northward",
+          "level": 1,
+          "shape": [
+            1,
+            27,
+            486,
+            730
+          ],
+          "chunk_bytes": 4359424,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 1806652,
+          "max_absolute_error": 0.00048828125,
+          "rmse": 6.161311615154737e-05,
+          "relative_error_min_abs": 1.7504873275756835e-06,
+          "max_relative_error": 0.0004880429477794046
+        },
+        {
+          "variable": "v_northward",
+          "level": 2,
+          "shape": [
+            1,
+            27,
+            243,
+            365
+          ],
+          "chunk_bytes": 1219591,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 471449,
+          "max_absolute_error": 0.0004878044128417969,
+          "rmse": 6.046272929511045e-05,
+          "relative_error_min_abs": 1.6783866882324217e-06,
+          "max_relative_error": 0.00048756704046806434
+        }
+      ]
+    },
+    {
+      "keep_mantissa_bits": 12,
+      "overview_chunk_bytes": 19712453,
+      "savings_fraction": 0.38944778661170176,
+      "repository_bytes": 19751859,
+      "write_seconds_excluding_source_fetch": 7.097454854003445,
+      "process_peak_rss_bytes": 1960464384,
+      "virtual_source_locations": [
+        "https://noaa-nos-ofs-pds.s3.amazonaws.com/ciofs/netcdf/2026/11/15/ciofs.t00z.20261115.regulargrid.n001.nc"
+      ],
+      "arrays": [
+        {
+          "variable": "zeta",
+          "level": 1,
+          "shape": [
+            1,
+            486,
+            730
+          ],
+          "chunk_bytes": 246120,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 102857,
+          "max_absolute_error": 0.0009708404541015625,
+          "rmse": 4.1191817083806836e-05,
+          "relative_error_min_abs": 1.2769535064697265e-05,
+          "max_relative_error": 0.00012196609342602757
+        },
+        {
+          "variable": "zeta",
+          "level": 2,
+          "shape": [
+            1,
+            243,
+            365
+          ],
+          "chunk_bytes": 70582,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 26560,
+          "max_absolute_error": 0.0009336471557617188,
+          "rmse": 4.414057089304226e-05,
+          "relative_error_min_abs": 1.1148723602294922e-05,
+          "max_relative_error": 0.00012116373786920903
+        },
+        {
+          "variable": "temp",
+          "level": 1,
+          "shape": [
+            1,
+            27,
+            486,
+            730
+          ],
+          "chunk_bytes": 3311788,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 1809859,
+          "max_absolute_error": 0.0009765625,
+          "rmse": 0.0002817999076746528,
+          "relative_error_min_abs": 8.1102237701416e-06,
+          "max_relative_error": 0.00012190647425860784
+        },
+        {
+          "variable": "temp",
+          "level": 2,
+          "shape": [
+            1,
+            27,
+            243,
+            365
+          ],
+          "chunk_bytes": 1002569,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 472419,
+          "max_absolute_error": 0.0009765625,
+          "rmse": 0.0002814435761547071,
+          "relative_error_min_abs": 8.108759880065918e-06,
+          "max_relative_error": 0.00012181751735899622
+        },
+        {
+          "variable": "salt",
+          "level": 1,
+          "shape": [
+            1,
+            27,
+            486,
+            730
+          ],
+          "chunk_bytes": 1765340,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 1809859,
+          "max_absolute_error": 0.00390625,
+          "rmse": 0.001982426749651764,
+          "relative_error_min_abs": 3.3790214538574216e-05,
+          "max_relative_error": 0.00012205541315757354
+        },
+        {
+          "variable": "salt",
+          "level": 2,
+          "shape": [
+            1,
+            27,
+            243,
+            365
+          ],
+          "chunk_bytes": 605634,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 472419,
+          "max_absolute_error": 0.00390625,
+          "rmse": 0.0019849036045648414,
+          "relative_error_min_abs": 3.3790214538574216e-05,
+          "max_relative_error": 0.00012205541315757354
+        },
+        {
+          "variable": "u_eastward",
+          "level": 1,
+          "shape": [
+            1,
+            27,
+            486,
+            730
+          ],
+          "chunk_bytes": 5021266,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 1806652,
+          "max_absolute_error": 0.00023031234741210938,
+          "rmse": 1.1536588359853072e-05,
+          "relative_error_min_abs": 4.2316718101501464e-06,
+          "max_relative_error": 0.00012181751735899622
+        },
+        {
+          "variable": "u_eastward",
+          "level": 2,
+          "shape": [
+            1,
+            27,
+            243,
+            365
+          ],
+          "chunk_bytes": 1379136,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 471449,
+          "max_absolute_error": 0.0002357959747314453,
+          "rmse": 1.1308524478981828e-05,
+          "relative_error_min_abs": 3.0083255767822265e-06,
+          "max_relative_error": 0.00012178726505604001
+        },
+        {
+          "variable": "v_northward",
+          "level": 1,
+          "shape": [
+            1,
+            27,
+            486,
+            730
+          ],
+          "chunk_bytes": 4943147,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 1806652,
+          "max_absolute_error": 0.0001220703125,
+          "rmse": 1.5407374252410844e-05,
+          "relative_error_min_abs": 1.7504873275756835e-06,
+          "max_relative_error": 0.00012205541315757354
+        },
+        {
+          "variable": "v_northward",
+          "level": 2,
+          "shape": [
+            1,
+            27,
+            243,
+            365
+          ],
+          "chunk_bytes": 1366871,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 471449,
+          "max_absolute_error": 0.0001220703125,
+          "rmse": 1.5131738296125561e-05,
+          "relative_error_min_abs": 1.6783866882324217e-06,
+          "max_relative_error": 0.00012205541315757354
+        }
+      ]
+    },
+    {
+      "keep_mantissa_bits": 14,
+      "overview_chunk_bytes": 22880246,
+      "savings_fraction": 0.29133199007912625,
+      "repository_bytes": 22919669,
+      "write_seconds_excluding_source_fetch": 6.899420353001915,
+      "process_peak_rss_bytes": 1960464384,
+      "virtual_source_locations": [
+        "https://noaa-nos-ofs-pds.s3.amazonaws.com/ciofs/netcdf/2026/11/15/ciofs.t00z.20261115.regulargrid.n001.nc"
+      ],
+      "arrays": [
+        {
+          "variable": "zeta",
+          "level": 1,
+          "shape": [
+            1,
+            486,
+            730
+          ],
+          "chunk_bytes": 279942,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 102857,
+          "max_absolute_error": 0.00023746490478515625,
+          "rmse": 1.0488881055996388e-05,
+          "relative_error_min_abs": 1.2769535064697265e-05,
+          "max_relative_error": 3.0407151762094443e-05
+        },
+        {
+          "variable": "zeta",
+          "level": 2,
+          "shape": [
+            1,
+            243,
+            365
+          ],
+          "chunk_bytes": 77824,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 26560,
+          "max_absolute_error": 0.0002346038818359375,
+          "rmse": 1.1435307702410675e-05,
+          "relative_error_min_abs": 1.1148723602294922e-05,
+          "max_relative_error": 3.0279163197921352e-05
+        },
+        {
+          "variable": "temp",
+          "level": 1,
+          "shape": [
+            1,
+            27,
+            486,
+            730
+          ],
+          "chunk_bytes": 4071558,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 1809859,
+          "max_absolute_error": 0.000244140625,
+          "rmse": 7.04699190658581e-05,
+          "relative_error_min_abs": 8.1102237701416e-06,
+          "max_relative_error": 3.050919852335479e-05
+        },
+        {
+          "variable": "temp",
+          "level": 2,
+          "shape": [
+            1,
+            27,
+            243,
+            365
+          ],
+          "chunk_bytes": 1173006,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 472419,
+          "max_absolute_error": 0.000244140625,
+          "rmse": 7.043059829770393e-05,
+          "relative_error_min_abs": 8.108759880065918e-06,
+          "max_relative_error": 3.0464584920030466e-05
+        },
+        {
+          "variable": "salt",
+          "level": 1,
+          "shape": [
+            1,
+            27,
+            486,
+            730
+          ],
+          "chunk_bytes": 2674654,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 1809859,
+          "max_absolute_error": 0.0009765625,
+          "rmse": 0.0004950525752761521,
+          "relative_error_min_abs": 3.3790214538574216e-05,
+          "max_relative_error": 3.0516646830846227e-05
+        },
+        {
+          "variable": "salt",
+          "level": 2,
+          "shape": [
+            1,
+            27,
+            243,
+            365
+          ],
+          "chunk_bytes": 849883,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 472419,
+          "max_absolute_error": 0.0009765625,
+          "rmse": 0.0004936356773930348,
+          "relative_error_min_abs": 3.3790214538574216e-05,
+          "max_relative_error": 3.0516646830846227e-05
+        },
+        {
+          "variable": "u_eastward",
+          "level": 1,
+          "shape": [
+            1,
+            27,
+            486,
+            730
+          ],
+          "chunk_bytes": 5444903,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 1806652,
+          "max_absolute_error": 6.103515625e-05,
+          "rmse": 2.8791766825210813e-06,
+          "relative_error_min_abs": 4.2316718101501464e-06,
+          "max_relative_error": 3.0516646830846227e-05
+        },
+        {
+          "variable": "u_eastward",
+          "level": 2,
+          "shape": [
+            1,
+            27,
+            243,
+            365
+          ],
+          "chunk_bytes": 1469678,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 471449,
+          "max_absolute_error": 4.9114227294921875e-05,
+          "rmse": 2.831728025726864e-06,
+          "relative_error_min_abs": 3.0083255767822265e-06,
+          "max_relative_error": 3.0507337014552e-05
+        },
+        {
+          "variable": "v_northward",
+          "level": 1,
+          "shape": [
+            1,
+            27,
+            486,
+            730
+          ],
+          "chunk_bytes": 5377292,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 1806652,
+          "max_absolute_error": 3.0517578125e-05,
+          "rmse": 3.854831573756797e-06,
+          "relative_error_min_abs": 1.7504873275756835e-06,
+          "max_relative_error": 3.0516646830846227e-05
+        },
+        {
+          "variable": "v_northward",
+          "level": 2,
+          "shape": [
+            1,
+            27,
+            243,
+            365
+          ],
+          "chunk_bytes": 1461506,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 471449,
+          "max_absolute_error": 3.0517578125e-05,
+          "rmse": 3.78864929427208e-06,
+          "relative_error_min_abs": 1.6783866882324217e-06,
+          "max_relative_error": 3.050919852335479e-05
+        }
+      ]
+    },
+    {
+      "keep_mantissa_bits": 16,
+      "overview_chunk_bytes": 25672115,
+      "savings_fraction": 0.2048596572121728,
+      "repository_bytes": 25711518,
+      "write_seconds_excluding_source_fetch": 7.19728804800252,
+      "process_peak_rss_bytes": 1960464384,
+      "virtual_source_locations": [
+        "https://noaa-nos-ofs-pds.s3.amazonaws.com/ciofs/netcdf/2026/11/15/ciofs.t00z.20261115.regulargrid.n001.nc"
+      ],
+      "arrays": [
+        {
+          "variable": "zeta",
+          "level": 1,
+          "shape": [
+            1,
+            486,
+            730
+          ],
+          "chunk_bytes": 308162,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 102857,
+          "max_absolute_error": 6.103515625e-05,
+          "rmse": 2.6320530192046217e-06,
+          "relative_error_min_abs": 1.2769535064697265e-05,
+          "max_relative_error": 7.625380315843252e-06
+        },
+        {
+          "variable": "zeta",
+          "level": 2,
+          "shape": [
+            1,
+            243,
+            365
+          ],
+          "chunk_bytes": 83407,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 26560,
+          "max_absolute_error": 6.103515625e-05,
+          "rmse": 2.873076114830684e-06,
+          "relative_error_min_abs": 1.1148723602294922e-05,
+          "max_relative_error": 7.573519944864775e-06
+        },
+        {
+          "variable": "temp",
+          "level": 1,
+          "shape": [
+            1,
+            27,
+            486,
+            730
+          ],
+          "chunk_bytes": 4717721,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 1809859,
+          "max_absolute_error": 6.103515625e-05,
+          "rmse": 1.7606197456067167e-05,
+          "relative_error_min_abs": 8.1102237701416e-06,
+          "max_relative_error": 7.628870698270535e-06
+        },
+        {
+          "variable": "temp",
+          "level": 2,
+          "shape": [
+            1,
+            27,
+            243,
+            365
+          ],
+          "chunk_bytes": 1325488,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 472419,
+          "max_absolute_error": 6.103515625e-05,
+          "rmse": 1.75942460738079e-05,
+          "relative_error_min_abs": 8.108759880065918e-06,
+          "max_relative_error": 7.615856212634706e-06
+        },
+        {
+          "variable": "salt",
+          "level": 1,
+          "shape": [
+            1,
+            27,
+            486,
+            730
+          ],
+          "chunk_bytes": 3584960,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 1809859,
+          "max_absolute_error": 0.000244140625,
+          "rmse": 0.00012358393856524825,
+          "relative_error_min_abs": 3.3790214538574216e-05,
+          "max_relative_error": 7.629336324033172e-06
+        },
+        {
+          "variable": "salt",
+          "level": 2,
+          "shape": [
+            1,
+            27,
+            243,
+            365
+          ],
+          "chunk_bytes": 1069563,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 472419,
+          "max_absolute_error": 0.000244140625,
+          "rmse": 0.00012317600019365611,
+          "relative_error_min_abs": 3.3790214538574216e-05,
+          "max_relative_error": 7.629336324033172e-06
+        },
+        {
+          "variable": "u_eastward",
+          "level": 1,
+          "shape": [
+            1,
+            27,
+            486,
+            730
+          ],
+          "chunk_bytes": 5780149,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 1806652,
+          "max_absolute_error": 1.7642974853515625e-05,
+          "rmse": 7.193859386163598e-07,
+          "relative_error_min_abs": 4.2316718101501464e-06,
+          "max_relative_error": 7.629219912263971e-06
+        },
+        {
+          "variable": "u_eastward",
+          "level": 2,
+          "shape": [
+            1,
+            27,
+            243,
+            365
+          ],
+          "chunk_bytes": 1544402,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 471449,
+          "max_absolute_error": 1.430511474609375e-05,
+          "rmse": 7.079332488008128e-07,
+          "relative_error_min_abs": 3.0083255767822265e-06,
+          "max_relative_error": 7.626659751828492e-06
+        },
+        {
+          "variable": "v_northward",
+          "level": 1,
+          "shape": [
+            1,
+            27,
+            486,
+            730
+          ],
+          "chunk_bytes": 5721048,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  244
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 1806652,
+          "max_absolute_error": 7.62939453125e-06,
+          "rmse": 9.639685712635194e-07,
+          "relative_error_min_abs": 1.7504873275756835e-06,
+          "max_relative_error": 7.629219912263971e-06
+        },
+        {
+          "variable": "v_northward",
+          "level": 2,
+          "shape": [
+            1,
+            27,
+            243,
+            365
+          ],
+          "chunk_bytes": 1537215,
+          "codecs": [
+            {
+              "name": "sharding_indexed",
+              "configuration": {
+                "chunk_shape": [
+                  1,
+                  1,
+                  243,
+                  183
+                ],
+                "codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "zstd",
+                    "configuration": {
+                      "level": 0,
+                      "checksum": false
+                    }
+                  }
+                ],
+                "index_codecs": [
+                  {
+                    "name": "bytes",
+                    "configuration": {
+                      "endian": "little"
+                    }
+                  },
+                  {
+                    "name": "crc32c"
+                  }
+                ],
+                "index_location": "end"
+              }
+            }
+          ],
+          "finite_values": 471449,
+          "max_absolute_error": 7.62939453125e-06,
+          "rmse": 9.482002154612425e-07,
+          "relative_error_min_abs": 1.6783866882324217e-06,
+          "max_relative_error": 7.629336324033172e-06
+        }
+      ]
+    }
+  ],
+  "source_fetch_seconds": 11.555927594003151,
+  "source_arrays_fetched": 5,
+  "measured_at_utc": "2026-11-18T04:18:35.975322+00:00",
+  "platform": "Linux-7.0.14-x86_64-with-glibc2.41",
+  "source_concurrency": 32
+}

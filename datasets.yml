@@ -137,6 +137,9 @@ wcofs-regulargrid-nowcast: &wcofs_regulargrid
     variables: [zeta, temp, salt, u_eastward, v_northward]
     levels: 3
     method: mean
+    # Dataset default (null disables rounding); per-variable values override it.
+    keep_mantissa_bits: 10
+    #keep_mantissa_bits_by_variable: {}  # e.g. {temp: 16, salt: null}
 
 ciofs-regulargrid-nowcast: &ciofs_regulargrid
   bucket_url: s3://noaa-nos-ofs-pds
@@ -152,6 +155,8 @@ ciofs-regulargrid-nowcast: &ciofs_regulargrid
     variables: [zeta, temp, salt, u_eastward, v_northward]
     levels: 3
     method: mean
+    keep_mantissa_bits: 10
+    #keep_mantissa_bits_by_variable: {}
 
 # Best time series of the same regulargrid files: nowcast up to the latest
 # cycle, then forecast (up to 72 h WCOFS, 48 h CIOFS). Each step holds the best
