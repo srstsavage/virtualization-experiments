@@ -56,7 +56,7 @@ the range.
 
 ## Update a store
 
-Run the same command with a later date range:
+Run the same command with the date range to add:
 
 ```bash
 ./virtualize.py wcofs-fields-nowcast --repo ./wcofs.icechunk \
@@ -65,8 +65,25 @@ Run the same command with a later date range:
 
 Overlapping ranges are fine. Files already indexed are recorded in the commit
 history and skipped without being opened, so re-running a range is a quick
-no-op. New data must come after the last time already in the store;
-back-filling earlier dates is refused (rebuild into a new repository instead).
+no-op. New timestamps can extend the store in either direction or fill gaps
+inside its existing time range. For example, add earlier history with:
+
+```bash
+./virtualize.py wcofs-fields-nowcast --repo ./wcofs.icechunk \
+    --start 2026-09-01 --end 2026-09-30
+```
+
+Every committed batch stays sorted by time. Inserting earlier steps moves
+existing virtual references and stored overview chunks without reading their
+data; only the small materialized time/provenance arrays are rewritten. Overviews
+are computed for new or replaced steps only. Backfills can take longer than
+appends because references throughout the affected timeline must be reordered.
+Insertion requires one time step per stored chunk or shard for virtual and
+multidimensional arrays, as used by the current presets. Incompatible layouts
+are rejected before committing the batch; rebuild those with a compatible layout.
+
+Run the local insertion and gap-filling integration tests with
+`uv run --script test_insertion.py`.
 
 ## Best time series (nowcast + forecast)
 
@@ -87,7 +104,7 @@ with an open end:
 
 Each run works out the best file for every valid time from the file names
 alone, without opening anything. It then opens only the files that add a new
-step (appended) or beat the file the store holds for that step (references,
+step (appended or inserted) or beat the file the store holds for that step (references,
 and overview levels, replaced in place). When no new cycle has appeared, a run
 does nothing and makes no commit. `--force` re-ingests the chosen files even
 when they rank the same. `--start today-N` / `today` and an omitted `--end`
@@ -104,8 +121,8 @@ How it is configured: the preset has `sources` instead of `file_regex` (see
 [Adding a dataset](#adding-a-dataset)). Each source is a regex with named
 groups for the cycle date and hour and the lead time; the file's valid time,
 cycle + lead + `lead_offset_hours`, is checked against the file when it is
-opened. Steps that fall inside the store but are not in it (a different time
-step, an old gap) are refused, as for appends.
+opened. Missing steps, including earlier history and old gaps, are inserted in
+chronological order with their provenance and overview levels kept aligned.
 
 Replacing steps leaves superseded data behind in old snapshots: chiefly
 overview chunks, about 48 CIOFS steps per cycle. So after every run that
@@ -141,7 +158,7 @@ without comparing against a repository.
 | `--workers` | 8 | Processes opening source files in parallel |
 | `--dry-run` | off | List the files and exit |
 | `--no-validate` | off | Skip the final read-back check |
-| `--force` | off | Re-ingest files whose time steps are already in the store, replacing their references in place instead of skipping them. New files in the range are still appended |
+| `--force` | off | Re-ingest files whose time steps are already in the store, replacing their references in place instead of skipping them. New timestamps are appended or inserted in chronological order |
 | `--retain` | `3d` | After a build that committed, expire snapshots older than this (`3d`, `12h`, `30m`, `0`) and garbage-collect what only they used |
 | `--no-gc` | off | Keep all snapshots and data |
 | `--no-catalog` | off | Don't update the gridlook/Xreds catalogs after the build (see [Catalogs](#catalogs)) |

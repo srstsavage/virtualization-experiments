@@ -27,6 +27,10 @@ Examples
     ./virtualize.py wcofs-fields-nowcast --repo ./wcofs.icechunk \\
         --start 2026-11-01 --end 2026-11-14
 
+    # Add earlier history, or fill missing steps inside the existing time range
+    ./virtualize.py wcofs-fields-nowcast --repo ./wcofs.icechunk \\
+        --start 2026-09-01 --end 2026-10-31
+
     # Re-ingest days already in the store (e.g. after the provider replaced files)
     ./virtualize.py wcofs-fields-nowcast --repo ./wcofs.icechunk \\
         --start 2026-10-15 --end 2026-10-16 --force
@@ -98,6 +102,7 @@ Reading the result:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import dataclasses
 import datetime as dt
@@ -775,7 +780,7 @@ def tag_provenance(vds: xr.Dataset, cand: Candidate, ds: Dataset) -> xr.Dataset:
 def plan_best(best: list[Candidate], committed: xr.Dataset | None, have: np.ndarray,
               ds: Dataset, force: bool) -> tuple[list[Candidate], dict]:
     """Of the best files per valid time, those that need work: valid times not
-    in the store yet (append), and ones the store holds from a worse file
+    in the store yet (append or insert), and ones the store holds from a worse file
     (replace; all of them with --force). Also returns {valid time: (source,
     cycle)} of the stored steps."""
     stored: dict = {}
@@ -823,6 +828,72 @@ def replace_steps(session: ic.Session, vds: xr.Dataset, dim: str, start: int) ->
     part.vz.to_icechunk(session.store, region={dim: slice(start, start + part.sizes[dim])})
     if coordinates is not None:  # the writer resets it to the subset's coordinates
         group.update_attributes({"coordinates": coordinates})
+
+
+async def _has_virtual_chunks(session: ic.Session, path: str) -> bool:
+    async for coords in session.chunk_coordinates(path):
+        if await session.chunk_type_async(path, coords) == ic.ChunkType.virtual:
+            return True
+    return False
+
+
+def insertion_arrays(session: ic.Session, dim: str, steps: int) -> list[tuple[zarr.Array, int, bool]]:
+    """Preflight every time-dependent array before inserting steps.
+
+    Icechunk moves whole stored chunks (shards for sharded arrays). Multi-step
+    chunks can only be reordered by rewriting small, materialized 1-D arrays
+    such as time and provenance. Never read virtual bytes to split a chunk.
+    """
+    root = zarr.open_group(session.store, mode="r+")
+    arrays = []
+    for _, array in root.members(max_depth=None):
+        if not isinstance(array, zarr.Array):
+            continue
+        dims = array.metadata.dimension_names or ()
+        if dim not in dims:
+            continue
+        axis = dims.index(dim)
+        if array.shape[axis] != steps:
+            raise SystemExit(f"cannot insert steps: {array.path} has {array.shape[axis]} "
+                             f"{dim} steps, expected {steps}")
+        extent = (array.shards or array.chunks)[axis]
+        rewrite = extent != 1
+        if rewrite and (array.ndim != 1 or asyncio.run(_has_virtual_chunks(session, '/' + array.path))):
+            raise SystemExit(
+                f"cannot insert steps: {array.path} has a {dim} chunk/shard extent of {extent}; "
+                "insertion requires one time step per chunk/shard for virtual or multidimensional "
+                "arrays (rebuild with a compatible layout instead)"
+            )
+        arrays.append((array, axis, rewrite))
+    return arrays
+
+
+def reorder_steps(session: ic.Session, dim: str, order: np.ndarray) -> None:
+    """Sort an uncommitted batch without fetching science data or overview bytes.
+
+    ``order[new_position]`` is the old position. The inverse mapping is also
+    supplied to Icechunk so sparse chunks clear stale destinations correctly.
+    """
+    arrays = insertion_arrays(session, dim, len(order))
+    destinations = np.argsort(order)
+    for array, axis, rewrite in arrays:
+        if rewrite:
+            # Raw Zarr values retain CF time units, dtype, codecs and attributes.
+            values = array[:]
+            array[:] = values[order]
+            continue
+
+        def forward(coords, axis=axis):
+            out = list(coords)
+            out[axis] = int(destinations[out[axis]])
+            return out
+
+        def backward(coords, axis=axis):
+            out = list(coords)
+            out[axis] = int(order[out[axis]])
+            return out
+
+        session.reindex_array('/' + array.path, forward, backward)
 
 
 # --------------------------------------------------------------------------- #
@@ -1337,21 +1408,17 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
         if not vds_list:
             continue
 
-        # Ordered, unique, and strictly after what is already committed.
+        # Ordered and unique within the batch; new steps may fill older gaps.
         order = np.argsort(times)
         vds_list = [vds_list[j] for j in order]
         batch_urls = [batch_urls[j] for j in order]
         times = times[order]
         if len(np.unique(times)) != len(times):
             raise SystemExit("two files in this batch have the same valid time; ambiguous, stopping")
-        replace = np.isin(times, have)  # only possible with --force
+        replace = np.isin(times, have)  # --force or a best-series upgrade
         new = ~replace
-        if have.size and new.any() and times[new][0] <= have[-1]:
-            j = int(np.argmax(new))
-            raise SystemExit(
-                f"{batch_urls[j]} is valid at {times[j]}, not after the last committed step "
-                f"{have[-1]}; appending out of order is not supported (rebuild instead)"
-            )
+        combined_times = np.concatenate([have, times[new]])
+        inserting = bool(have.size and new.any() and times[new][0] < have[-1])
 
         # Homogeneity: refuse to combine files that would not form one array.
         # (Replacements are also checked against the stored arrays by the writer.)
@@ -1361,6 +1428,8 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
                 raise SystemExit(f"schema/chunk drift in {u}; partition the dataset instead")
 
         session = repo.writable_session("main")
+        if inserting:
+            insertion_arrays(session, dim, have.size)
         if replace.any():
             # Rewrite the references of steps already in the store, one region
             # per run of consecutive time indices.
@@ -1399,6 +1468,12 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
                 if ov:
                     update_overviews(session, vds, ov, dim, int(have.size), time_chunk=ds.time_chunk,
                                      read_retries=ds.source_read_retries, progress=progress)
+        if inserting:
+            time_order = np.argsort(combined_times)
+            reorder_steps(session, dim, time_order)
+            combined_times = combined_times[time_order]
+            log.info("batch %d: reordered %d steps after inserting earlier data", i // args.batch_size,
+                     combined_times.size)
         n_new, n_replaced = int(new.sum()), int(replace.sum())
         verb = "index" if not n_replaced else "re-index" if not n_new else "index/re-index"
         upgraded = []
@@ -1421,7 +1496,7 @@ def build(args: argparse.Namespace, ds: Dataset, name: str) -> None:
                 "versions": versions(),
             },
         )  # a committed session is read-only; the next batch opens a fresh one
-        have = np.concatenate([have, times[new]])
+        have = combined_times
         commits += 1
         total_new += n_new
         total_replaced += n_replaced
